@@ -184,6 +184,16 @@ class _AsyncLLMEngine(LLMEngine):
         the sequences and returns the newly generated results.
         """
         seq_group_metadata_list, scheduler_outputs, ignored = self._schedule()
+        print("############################step_async get called#############################")
+        for seq_group_metadata in seq_group_metadata_list:
+            print("seq_group_metadata status:")
+            print(seq_group_metadata.request_id)
+            print(seq_group_metadata.is_prompt)
+            print(seq_group_metadata.seq_data)
+            print(seq_group_metadata.sampling_params)
+
+        print("############step_async called finished##################")
+
         if scheduler_outputs.is_empty():
             return ignored
 
