@@ -48,6 +48,31 @@ class UglyAsyncLLMEngine(LLMEngine):
         # TODO: change this to real one
         return RequestOutput(request_id=request_id, prompt="", prompt_token_ids=[1, 3087, 8970, 338, 263], outputs=[], finished=False)
 
+    async def step_async_multiple(self) -> List[RequestOutput]:
+        seq_group_metadata_lists = []
+        request_id_0= "cmpl-81e2b9767b5b47bca7e649482698d385"
+        seq_data_0 = {0: SequenceData(prompt_token_ids=[1, 3087, 8970, 338, 263])}
+        sampling_params_0 = SamplingParams(n=1, best_of=1, presence_penalty=0.0, frequency_penalty=0.0, temperature=0.0, top_p=1.0, top_k=-1, use_beam_search=False, length_penalty=1.0, early_stopping=False, stop=[], ignore_eos=False, max_tokens=7, logprobs=None, skip_special_tokens=True)
+
+        seq_group_metadata_lists.append(SequenceGroupMetadata(request_id_0, True, seq_data_0, sampling_params_0, {}))
+
+        request_id_1 = "cmpl-81e2b9767b5b47bca7e649482698d385"
+        seq_data_1 = {1: SequenceData(prompt_token_ids=[1, 3087, 8970, 338, 263])}
+        sampling_params_1 = SamplingParams(n=1, best_of=1, presence_penalty=0.0, frequency_penalty=0.0, temperature=0.0, top_p=1.0, top_k=-1, use_beam_search=False, length_penalty=1.0, early_stopping=False, stop=[], ignore_eos=False, max_tokens=7, logprobs=None, skip_special_tokens=True)
+
+        seq_group_metadata_lists.append(SequenceGroupMetadata(request_id_1, True, seq_data_1, sampling_params_1, {}))
+
+        output = await self._run_workers_async(
+            "execute_model",
+            seq_group_metadata_list=seq_group_metadata_lists,
+            blocks_to_swap_in={},
+            blocks_to_swap_out={},
+            blocks_to_copy={},
+        )
+
+        # TODO: change this to real one
+        return RequestOutput(request_id=request_id_0, prompt="", prompt_token_ids=[1, 3087, 8970, 338, 263], outputs=[], finished=False)
+
 
     async def _run_workers_async(
         self,
@@ -92,5 +117,9 @@ async def test_model_execution():
     engine.start_background_loop()
     await asyncio.sleep(2)
     await engine.engine.step_async()
+    # Now let's try something difficult
+    await engine.engine.step_async_multiple()
+
+
 
 
