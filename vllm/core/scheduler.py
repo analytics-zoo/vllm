@@ -413,7 +413,6 @@ class FixedWindowScheduler:
         # Instantiate the scheduling policy.
         self.policy = PolicyFactory.get_policy(policy_name="fcfs")
 
-        # TODO(zhuohan): Use deque instead of list for better performance.
         # Sequence groups in the WAITING state.
         self.waiting: List[SequenceGroup] = []
         # Sequence groups in the RUNNING state.

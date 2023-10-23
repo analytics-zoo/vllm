@@ -148,9 +148,9 @@ class RequestTracker:
         new_requests: List[dict] = []
         finished_requests: Set[str] = set()
 
-        print("Print all the requests in get_new_and_finished_requests")
-        for keys in self._request_streams.keys():
-            print(keys)
+        # print("Print all the requests in get_new_and_finished_requests")
+        # for keys in self._request_streams.keys():
+        #     print(keys)
 
         while not self._finished_requests.empty():
             request_id = self._finished_requests.get_nowait()
@@ -313,17 +313,16 @@ class AsyncLLMEngine:
         """Kick the engine to process the waiting requests.
 
         Returns True if there are in-progress requests."""
-        print("One loop in engine_step")
-        # problem here is that we return blank requests
+        # print("One loop in engine_step")
         new_requests, finished_requests = (
             self._request_tracker.get_new_and_finished_requests())
 
-        print("new_requests in engine_step:")
-        for new_request in new_requests:
-            print(new_request)
-        print("finished_requests in engine_step:")
-        for finished_request in finished_requests:
-            print(finished_request)
+        # print("new_requests in engine_step:")
+        # for new_request in new_requests:
+        #     print(new_request)
+        # print("finished_requests in engine_step:")
+        # for finished_request in finished_requests:
+        #     print(finished_request)
         
 
         for new_request in new_requests:
@@ -343,7 +342,7 @@ class AsyncLLMEngine:
             request_outputs = await self.engine.step_async()
 
         # Put the outputs into the corresponding streams.
-        print("The length of the request_outputs:" + str(len(request_outputs)))
+        # print("The length of the request_outputs:" + str(len(request_outputs)))
         for request_output in request_outputs:
             self._request_tracker.process_request_output(
                 request_output, verbose=True)
@@ -360,8 +359,8 @@ class AsyncLLMEngine:
         # Initialize the RequestTracker here so it uses the right event loop.
         has_requests_in_progress = False
         while True:
-            print("One loop in run_engine_loop")
-            print("has_requests_in_progress:" + str(has_requests_in_progress))
+            # print("One loop in run_engine_loop")
+            # print("has_requests_in_progress:" + str(has_requests_in_progress))
             if not has_requests_in_progress:
                 await self._request_tracker.wait_for_new_requests()
             has_requests_in_progress = await self.engine_step()
@@ -444,7 +443,7 @@ class AsyncLLMEngine:
                                             arrival_time=arrival_time)
 
             async for request_output in stream:
-                print(request_output)
+                # print(request_output)
                 yield request_output
         except (Exception, asyncio.CancelledError) as e:
             # If there is an exception or coroutine is cancelled, abort the
