@@ -11,8 +11,6 @@ from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
 
 logger = init_logger(__name__)
 
-_FIXED_WINDOW_SIZE = 5
-
 
 class PreemptionMode(enum.Enum):
     """Preemption modes.
