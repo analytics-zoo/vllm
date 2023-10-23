@@ -15,7 +15,7 @@ class EngineArgs:
     tokenizer_mode: str = 'auto'
     trust_remote_code: bool = False
     download_dir: Optional[str] = None
-    load_format: str = 'dummy'
+    load_format: str = 'auto'
     dtype: str = 'auto'
     seed: int = 0
     max_model_len: Optional[int] = None

@@ -149,3 +149,10 @@ class BigDLLlamaForCausalLM(nn.Module):
 
             #pdb.set_trace()
         return bigdl_output
+
+    def load_weights(self,
+                     model_name_or_path: str,
+                     cache_dir: Optional[str] = None,
+                     load_format: str = "auto",
+                     revision: Optional[str] = None):
+        pass
