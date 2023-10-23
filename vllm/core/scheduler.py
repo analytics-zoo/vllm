@@ -429,7 +429,7 @@ class FixedWindowScheduler:
         if isinstance(request_id, str):
             request_id = (request_id, )
         request_ids = set(request_id)
-        for state_queue in [self.waiting, self.running, self.swapped]:
+        for state_queue in [self.waiting, self.running]:
             # We need to reverse the list as we are removing elements
             # from it as we iterate over it. If we don't do it,
             # indices will get messed up and we will skip over elements.

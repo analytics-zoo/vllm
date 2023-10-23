@@ -147,5 +147,5 @@ class BigDLLlamaForCausalLM(nn.Module):
                     kv_cache[seq_id][i][j] = outputs.past_key_values[i][j][index].unsqueeze(0).to(device=self.device,dtype = self.dtype)
             index = index + 1
 
-            pdb.set_trace()
+            #pdb.set_trace()
         return bigdl_output
