@@ -65,7 +65,6 @@ class BigDLLlamaForCausalLM(nn.Module):
         #     if kv_cache.get(i) is None:
         #         kv_cache[i] = bigdl_kv_cache[:]
 
-
         bigdl_input_ids = []
         bigdl_position_ids = []
         cur_seq_ids = []
@@ -148,4 +147,5 @@ class BigDLLlamaForCausalLM(nn.Module):
             index = index + 1
 
             #pdb.set_trace()
+
         return bigdl_output
