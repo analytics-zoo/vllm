@@ -46,6 +46,8 @@ class BigDLLlamaForCausalLM(nn.Module):
         self.config = config
         self.model = AutoModelForCausalLM.from_pretrained(config._name_or_path)
         self.tokenizer = AutoTokenizer.from_pretrained(config._name_or_path)
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.dtype = self.model.config.torch_dtype
 
     def decode(self, generated_ids: List[int]) -> str:
         return self.tokenizer.decode(
@@ -57,11 +59,11 @@ class BigDLLlamaForCausalLM(nn.Module):
     ) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
         kv_cache_0 = self.model.config.num_hidden_layers
         kv_cache_1 = 2
-        bigdl_kv_cache = [[torch.Tensor() for _ in range(kv_cache_1)] for _ in range(kv_cache_0)]
+        bigdl_kv_cache = [[torch.tensor([], device=self.device, dtype = self.dtype) for _ in range(kv_cache_1)] for _ in range(kv_cache_0)]
         seq_len = len(seq_group_meta_data_lists)
-        for i in range(seq_len):
-            if kv_cache.get(i) is None:
-                kv_cache[i] = bigdl_kv_cache[:]
+        # for i in range(seq_len):
+        #     if kv_cache.get(i) is None:
+        #         kv_cache[i] = bigdl_kv_cache[:]
 
 
         bigdl_input_ids = []
@@ -86,14 +88,18 @@ class BigDLLlamaForCausalLM(nn.Module):
 
             context_len = seq_data.get_len()
             bigdl_position_ids.append(range(context_len))
+
         if all_decoding: 
+            # pdb.set_trace()
             for seq_group_meta_data in seq_group_meta_data_lists:
+                seq_ids = list(seq_group_meta_data.seq_data.keys())
+                seq_id = seq_ids[0]
                 for i in range(kv_cache_0):
                     for j in range(kv_cache_1):
-                        bigdl_kv_cache[i][j] = torch.cat((bigdl_kv_cache[i][j], kv_cache[seq_id][i][j]), dim=0)
+                        bigdl_kv_cache[i][j] = torch.cat((bigdl_kv_cache[i][j], kv_cache[seq_id][i][j]), dim=0).to(dtype = self.dtype)
             
-        bigdl_input_ids = torch.tensor(bigdl_input_ids, device="cuda")
-        bigdl_position_ids = torch.tensor(bigdl_position_ids, device="cuda")
+        bigdl_input_ids = torch.tensor(bigdl_input_ids, device=self.device)
+        bigdl_position_ids = torch.tensor(bigdl_position_ids, device=self.device)
         if all_decoding:
             kwargs = {
                         "input_ids": bigdl_input_ids,
@@ -111,6 +117,7 @@ class BigDLLlamaForCausalLM(nn.Module):
                         "return_dict": True,
                     }
         # kwargs["position_ids"] = position_ids
+        # pdb.set_trace()
         outputs = self.model.forward(**kwargs)
         index = 0
         bigdl_output = []
@@ -133,9 +140,12 @@ class BigDLLlamaForCausalLM(nn.Module):
                 logprobs = {tokens[0]: logprobs}
             )
             bigdl_output.append([seq_output])
-            
+            if kv_cache.get(seq_id) is None:
+                kv_cache[seq_id] = [[[] for _ in range(kv_cache_1)] for _ in range(kv_cache_0)]
             for i in range(kv_cache_0):
                 for j in range(kv_cache_1):
-                    kv_cache[seq_id][i][j] = outputs.past_key_values[i][j][index].unsqueeze(0)
+                    kv_cache[seq_id][i][j] = outputs.past_key_values[i][j][index].unsqueeze(0).to(device=self.device,dtype = self.dtype)
             index = index + 1
+
+            pdb.set_trace()
         return bigdl_output
