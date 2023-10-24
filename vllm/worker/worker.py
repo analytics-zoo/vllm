@@ -326,6 +326,9 @@ class Worker:
         #     cache_events = self.cache_events
         # else:
         #     cache_events = None
+        if finished_seqs:
+            self.clean_finished_seqs(finished_seqs)
+
         cache_events = None
         # If there is no input, we don't need to execute the model.
         if not seq_group_metadata_list:

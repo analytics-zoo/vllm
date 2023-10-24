@@ -36,6 +36,7 @@ class SchedulerOutputs:
         blocks_to_swap_out: Dict[int, int],
         blocks_to_copy: Dict[int, List[int]],
         ignored_seq_groups: List[SequenceGroup],
+        finished_seqs: List[int],
     ) -> None:
         self.scheduled_seq_groups = scheduled_seq_groups
         self.prompt_run = prompt_run
@@ -46,11 +47,13 @@ class SchedulerOutputs:
         # Swap in and swap out should never happen at the same time.
         assert not (blocks_to_swap_in and blocks_to_swap_out)
         self.ignored_seq_groups = ignored_seq_groups
+        self.finished_seqs = finished_seqs
 
     def is_empty(self) -> bool:
         # NOTE: We do not consider the ignored sequence groups.
         return (not self.scheduled_seq_groups and not self.blocks_to_swap_in
-                and not self.blocks_to_swap_out and not self.blocks_to_copy)
+                and not self.blocks_to_swap_out and not self.blocks_to_copy
+                and not self.finished_seqs)
 
 
 class Scheduler:
@@ -417,6 +420,7 @@ class FixedWindowScheduler:
         self.waiting: List[SequenceGroup] = []
         # Sequence groups in the RUNNING state.
         self.running: List[SequenceGroup] = []
+        self.cleaned: List[int] = []
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
@@ -456,6 +460,8 @@ class FixedWindowScheduler:
 
         ignored_seq_groups: List[SequenceGroup] = []
         scheduled: List[SequenceGroup] = []
+        finished_seqs: List[int] = self.cleaned.copy()
+        self.cleaned=[]
         # The total number of sequences on the fly, including the
         # requests in the generation phase.
         num_curr_seqs = sum(seq_group.get_max_num_running_seqs()
@@ -518,6 +524,7 @@ class FixedWindowScheduler:
                 blocks_to_swap_out={},
                 blocks_to_copy={},
                 ignored_seq_groups=ignored_seq_groups,
+                finished_seqs=finished_seqs,
             )
             return scheduler_outputs
 
@@ -539,6 +546,7 @@ class FixedWindowScheduler:
             blocks_to_swap_out={},
             blocks_to_copy={},
             ignored_seq_groups=[],
+            finished_seqs=finished_seqs,
         )
         return scheduler_outputs
 
@@ -576,7 +584,8 @@ class FixedWindowScheduler:
         self.block_manager.fork(parent_seq, child_seq)
 
     def free_seq(self, seq: Sequence) -> None:
-        self.block_manager.free(seq)
+        #self.block_manager.free(seq)
+        self.cleaned.append(seq.seq_id)
 
     def free_finished_seq_groups(self) -> None:
         for seq_group in self.running:

@@ -384,8 +384,7 @@ class LLMEngine:
                 # not be used in the future iterations.
                 parent.status = SequenceStatus.FINISHED_ABORTED
                 seq_group.remove(parent.seq_id)
-                # TODO(gc): Should we do anything special in this case?
-                # self.scheduler.free_seq(parent)
+                self.scheduler.free_seq(parent)
                 continue
             # Fork the parent sequence if there are multiple child samples.
             # The outputs diverges, we need to fork the requests
@@ -425,7 +424,7 @@ class LLMEngine:
             # old sequences.
             for seq, parent in child_seqs:
                 if seq is parent and seq.is_finished():
-                    #self.scheduler.free_seq(seq)
+                    self.scheduler.free_seq(seq)
                     pass
             return
 
@@ -523,8 +522,7 @@ class LLMEngine:
         # manager. Keep them in the sequence group as candidate output.
         for seq, parent in selected_child_seqs:
             if seq is parent and seq.is_finished():
-                #self.scheduler.free_seq(seq)
-                pass
+                self.scheduler.free_seq(seq)
 
         # Remove the unselected parent sequences from the sequence group and
         # free their memory in block manager.
@@ -533,7 +531,7 @@ class LLMEngine:
                 # Remove the parent sequence if it is not selected for next
                 # iteration
                 seq_group.remove(seq.seq_id)
-                #self.scheduler.free_seq(seq)
+                self.scheduler.free_seq(seq)
 
     def _process_model_outputs(
             self, output: SamplerOutput,
