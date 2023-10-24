@@ -436,6 +436,7 @@ class AsyncLLMEngine:
         arrival_time = time.monotonic()
 
         try:
+            # print("In generate-sampling_params" + str(sampling_params))
             stream = await self.add_request(request_id,
                                             prompt,
                                             sampling_params,

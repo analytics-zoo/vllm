@@ -7,7 +7,7 @@ from typing import Optional, Tuple, List, Type, Dict
 from vllm.transformers_utils.tokenizer import (detokenize_incrementally,
                                                get_tokenizer)
 from vllm.model_executor.quantization_utils import QuantizationConfig
-from vllm.sequence import SamplerOutput, SequenceOutputs
+from vllm.sequence import SamplerOutput, SequenceOutputs, SequenceGroupMetadata
 import math
 
 import pdb
@@ -55,16 +55,14 @@ class BigDLLlamaForCausalLM(nn.Module):
             generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )
 
+    # TODO(gc): fix this Optional problem
     def forward(
-        self, seq_group_meta_data_lists, kv_cache: Optional = None
+        self, seq_group_meta_data_lists: List[SequenceGroupMetadata], kv_cache: Optional = None
     ) -> Tuple[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor]]]:
         kv_cache_0 = self.model.config.num_hidden_layers
         kv_cache_1 = 2
         bigdl_kv_cache = [[torch.tensor([], device=self.device, dtype = self.dtype) for _ in range(kv_cache_1)] for _ in range(kv_cache_0)]
         seq_len = len(seq_group_meta_data_lists)
-        # for i in range(seq_len):
-        #     if kv_cache.get(i) is None:
-        #         kv_cache[i] = bigdl_kv_cache[:]
 
         bigdl_input_ids = []
         bigdl_position_ids = []
@@ -84,6 +82,7 @@ class BigDLLlamaForCausalLM(nn.Module):
             bigdl_input_ids.append(cur_seq_input_ids)
             
             bigdl_sampling_params[seq_id] = seq_group_meta_data.sampling_params
+            # print("sampling params for seq " + str(seq_id) + " is " + str(seq_group_meta_data.sampling_params))
 
             context_len = seq_data.get_len()
             bigdl_position_ids.append(range(context_len))
