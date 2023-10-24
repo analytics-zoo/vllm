@@ -42,6 +42,7 @@ class UglyAsyncLLMEngine(LLMEngine):
             blocks_to_swap_in={},
             blocks_to_swap_out={},
             blocks_to_copy={},
+            finished_seqs=[],
         )
         print(output)
 
@@ -68,6 +69,7 @@ class UglyAsyncLLMEngine(LLMEngine):
             blocks_to_swap_in={},
             blocks_to_swap_out={},
             blocks_to_copy={},
+            finished_seqs=[],
         )
 
         # TODO: change this to real one

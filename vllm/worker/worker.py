@@ -50,6 +50,21 @@ class Worker:
 
         self.kv_cache = dict()
 
+    def clean_finished_seqs(
+            self,
+            finished_seqs: List[int]
+        ):
+        """
+        This function cleans the finished sequences and their KVCache in self.kv_cache
+        """
+        for seq_id in finished_seqs:
+            if seq_id not in self.kv_cache.keys():
+                raise ValueError(
+                    f"Duplicate key {seq_id} received during clean worker's KVCache"
+                )
+            del self.kv_cache[seq_id]
+
+
     def init_model(self):
         # This env var set by Ray causes exceptions with graph building.
         os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)
@@ -293,6 +308,7 @@ class Worker:
         blocks_to_swap_in: Dict[int, int],
         blocks_to_swap_out: Dict[int, int],
         blocks_to_copy: Dict[int, List[int]],
+        finished_seqs: List[int],
     ) -> SamplerOutput:
         # Issue cache operations.
         # issued_cache_op = False

@@ -192,12 +192,15 @@ class _AsyncLLMEngine(LLMEngine):
             return ignored
 
         # Execute the model.
+        # Co(gc): Now that we do not have page table support, we need to pass the
+        # list of sequences that have been finished so that we can clean the KVCache.
         output = await self._run_workers_async(
             "execute_model",
             seq_group_metadata_list=seq_group_metadata_list,
             blocks_to_swap_in=scheduler_outputs.blocks_to_swap_in,
             blocks_to_swap_out=scheduler_outputs.blocks_to_swap_out,
             blocks_to_copy=scheduler_outputs.blocks_to_copy,
+            finished_seqs =[],
         )
         print("We finished model_execution")
         return self._process_model_outputs(output, scheduler_outputs) + ignored
