@@ -422,7 +422,6 @@ class LLMEngine:
             for seq, parent in child_seqs:
                 if seq is parent and seq.is_finished():
                     self.scheduler.free_seq(seq)
-                    pass
             return
 
         # Beam search case
