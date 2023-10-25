@@ -397,8 +397,6 @@ class Scheduler:
             seq.status = SequenceStatus.SWAPPED
 
 
-
-
 class FixedWindowScheduler:
 
     def __init__(
@@ -473,7 +471,7 @@ class FixedWindowScheduler:
         ignored_seq_groups: List[SequenceGroup] = []
         scheduled: List[SequenceGroup] = []
         finished_seqs: List[int] = self.cleaned.copy()
-        self.cleaned=[]
+        self.cleaned = []
         # The total number of sequences on the fly, including the
         # requests in the generation phase.
         num_curr_seqs = sum(seq_group.get_max_num_running_seqs()

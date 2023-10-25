@@ -17,6 +17,7 @@ from vllm.utils import get_gpu_memory, get_max_shared_memory_bytes
 
 import pdb
 
+
 class Worker:
     """A worker class that executes (a partition of) the model on a GPU.
 
@@ -50,10 +51,7 @@ class Worker:
 
         self.kv_cache = dict()
 
-    def clean_finished_seqs(
-            self,
-            finished_seqs: List[int]
-        ):
+    def clean_finished_seqs(self, finished_seqs: List[int]):
         """
         This function cleans the finished sequences and their KVCache in self.kv_cache
         """
@@ -63,7 +61,6 @@ class Worker:
                     f"Duplicate key {seq_id} received during clean worker's KVCache"
                 )
             del self.kv_cache[seq_id]
-
 
     def init_model(self):
         # This env var set by Ray causes exceptions with graph building.
@@ -339,8 +336,10 @@ class Worker:
 
         # pdb.set_trace()
         #TODO: use environment/global virable to check
-        if True :
-            output = self.model(seq_group_meta_data_lists = seq_group_metadata_list, kv_cache = self.kv_cache)
+        if True:
+            output = self.model(
+                seq_group_meta_data_lists=seq_group_metadata_list,
+                kv_cache=self.kv_cache)
             return output
         else:
             # Prepare input tensors.
