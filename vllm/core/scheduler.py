@@ -187,6 +187,8 @@ class Scheduler:
                     blocks_to_swap_out=blocks_to_swap_out,
                     blocks_to_copy=blocks_to_copy,
                     ignored_seq_groups=ignored_seq_groups,
+                    # Co(gc): not used
+                    finished_seqs=[],
                 )
                 return scheduler_outputs
 
@@ -259,6 +261,8 @@ class Scheduler:
             blocks_to_swap_out=blocks_to_swap_out,
             blocks_to_copy=blocks_to_copy,
             ignored_seq_groups=[],
+            # Co(gc): not used
+            finished_seqs=[],
         )
         return scheduler_outputs
 
