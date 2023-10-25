@@ -20,9 +20,9 @@ from transformers.generation.logits_process import (
     TopPLogitsWarper,
 )
 
-def prepare_logits_processor(
-    temperature: float, repetition_penalty: float, top_p: float, top_k: int
-) -> LogitsProcessorList:
+
+def prepare_logits_processor(temperature: float, repetition_penalty: float,
+                             top_p: float, top_k: int) -> LogitsProcessorList:
     processor_list = LogitsProcessorList()
     # TemperatureLogitsWarper doesn't accept 0.0, 1.0 makes it a no-op so we skip two cases.
     if temperature >= 1e-5 and temperature != 1.0:
@@ -35,10 +35,13 @@ def prepare_logits_processor(
         processor_list.append(TopKLogitsWarper(top_k))
     return processor_list
 
+
 def _pad_to_max(x: List[int], max_len: int) -> List[int]:
     return x + [0] * (max_len - len(x))
 
+
 class BigDLLlamaForCausalLM(nn.Module):
+
     def __init__(
         self,
         config: LlamaConfig,
@@ -96,7 +99,7 @@ class BigDLLlamaForCausalLM(nn.Module):
             else:
                 bigdl_input_ids.append([cur_seq_input_ids[-1]])
                 bigdl_position_ids.append([context_len - 1])
-            
+
             bigdl_sampling_params[seq_id] = seq_group_meta_data.sampling_params
 
             context_len = seq_data.get_len()
@@ -111,32 +114,42 @@ class BigDLLlamaForCausalLM(nn.Module):
                     continue
                 for i in range(kv_cache_0):
                     for j in range(kv_cache_1):
-                        target_size = (bigdl_kv_cache[i][j].size(0) + kv_cache[seq_id][i][j].size(0),) + kv_cache[seq_id][i][j].size()[1:]
+                        target_size = (bigdl_kv_cache[i][j].size(0) +
+                                       kv_cache[seq_id][i][j].size(0),
+                                       ) + kv_cache[seq_id][i][j].size()[1:]
                         bigdl_kv_cache[i][j].resize_(target_size)
-                        bigdl_kv_cache[i][j][-kv_cache[seq_id][i][j].size(0):] = kv_cache[seq_id][i][j]
+                        bigdl_kv_cache[i][j][-kv_cache[seq_id][i][j].
+                                             size(0):] = kv_cache[seq_id][i][j]
         else:
-            bigdl_input_ids = [_pad_to_max(input_ids, max_context_len) for input_ids in bigdl_input_ids]
-            bigdl_position_ids = [_pad_to_max(position_ids, max_context_len) for position_ids in bigdl_position_ids]
+            bigdl_input_ids = [
+                _pad_to_max(input_ids, max_context_len)
+                for input_ids in bigdl_input_ids
+            ]
+            bigdl_position_ids = [
+                _pad_to_max(position_ids, max_context_len)
+                for position_ids in bigdl_position_ids
+            ]
 
         bigdl_input_ids = torch.tensor(bigdl_input_ids, device=self.device)
-        bigdl_position_ids = torch.tensor(bigdl_position_ids, device=self.device)
+        bigdl_position_ids = torch.tensor(bigdl_position_ids,
+                                          device=self.device)
 
         if all_decoding:
             kwargs = {
-                        "input_ids": bigdl_input_ids,
-                        # "position_ids": bigdl_position_ids,
-                        "past_key_values": bigdl_kv_cache,
-                        "use_cache": True,
-                        "return_dict": True,
-                    }
+                "input_ids": bigdl_input_ids,
+                # "position_ids": bigdl_position_ids,
+                "past_key_values": bigdl_kv_cache,
+                "use_cache": True,
+                "return_dict": True,
+            }
         else:
             kwargs = {
-                        "input_ids": bigdl_input_ids,
-                        # "position_ids": bigdl_position_ids,
-                        "past_key_values": None,
-                        "use_cache": True,
-                        "return_dict": True,
-                    }
+                "input_ids": bigdl_input_ids,
+                # "position_ids": bigdl_position_ids,
+                "past_key_values": None,
+                "use_cache": True,
+                "return_dict": True,
+            }
         # pdb.set_trace()
         outputs = self.model.forward(**kwargs)
         # self.tmp_kv_cache = outputs.past_key_values
@@ -146,29 +159,29 @@ class BigDLLlamaForCausalLM(nn.Module):
             # pdb.set_trace()
             cur_sampling_params = bigdl_sampling_params[seq_id]
             logits_processor = prepare_logits_processor(
-                cur_sampling_params.temperature, 1,
-                cur_sampling_params.top_p, cur_sampling_params.top_k
-            )
-    
-            last_token_logits = logits_processor(None, outputs.logits[index:index+1, -1, :])[0]
+                cur_sampling_params.temperature, 1, cur_sampling_params.top_p,
+                cur_sampling_params.top_k)
+
+            last_token_logits = logits_processor(
+                None, outputs.logits[index:index + 1, -1, :])[0]
             probs = torch.softmax(last_token_logits, dim=-1)
             indices = torch.multinomial(probs, num_samples=2)
             tokens = [int(token) for token in indices.tolist()]
 
             logprobs = math.log(probs[tokens[0]])
-            seq_output = SequenceOutputs(
-                parent_seq_id = seq_id,
-                output_token = tokens[0],
-                logprobs = {tokens[0]: logprobs}
-            )
+            seq_output = SequenceOutputs(parent_seq_id=seq_id,
+                                         output_token=tokens[0],
+                                         logprobs={tokens[0]: logprobs})
             bigdl_output.append([seq_output])
             if kv_cache.get(seq_id) is None:
-                kv_cache[seq_id] = [[[] for _ in range(kv_cache_1)] for _ in range(kv_cache_0)]
+                kv_cache[seq_id] = [[[] for _ in range(kv_cache_1)]
+                                    for _ in range(kv_cache_0)]
             for i in range(kv_cache_0):
                 for j in range(kv_cache_1):
-                    kv_cache[seq_id][i][j] = outputs.past_key_values[i][j][index].unsqueeze(0)
+                    kv_cache[seq_id][i][j] = outputs.past_key_values[i][j][
+                        index].unsqueeze(0)
             index = index + 1
-            
+
         return bigdl_output
 
     def load_weights(self,
