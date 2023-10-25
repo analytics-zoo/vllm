@@ -185,7 +185,6 @@ class EngineArgs:
                                    self.dtype, self.seed, self.revision,
                                    self.tokenizer_revision, self.max_model_len,
                                    self.quantization)
-        # gc-TODO: disable cache_config later
         cache_config = CacheConfig(
             self.block_size, self.gpu_memory_utilization, self.swap_space,
             getattr(model_config.hf_config, 'sliding_window', None))

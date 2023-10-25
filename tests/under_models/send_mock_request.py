@@ -15,13 +15,15 @@ from functools import partial
 import asyncio
 
 # This is the model to load for workers
-MODEL_PATH="/models/vicuna-7b/"
+MODEL_PATH="YOUR_MODEL_PATH"
 
 
 """
 1. Prepare a faked sequencegroup meta data
 2. Start a mocked AsyncLLMEngine, and modify its step_async function
 3. invoke the step_async function manually
+4. this test tries to kick off the `model_execution` part for the 
+   model so that we can perform tests
 """
 
 class UglyAsyncLLMEngine(LLMEngine):
@@ -44,12 +46,14 @@ class UglyAsyncLLMEngine(LLMEngine):
             blocks_to_copy={},
             finished_seqs=[],
         )
-        print(output)
 
-        # TODO: change this to real one
+        # Co(gc): we cannot use the real one as it contains private methods that cannot be invoked
         return RequestOutput(request_id=request_id, prompt="", prompt_token_ids=[1, 3087, 8970, 338, 263], outputs=[], finished=False)
 
     async def step_async_multiple(self) -> List[RequestOutput]:
+        """
+        Same but send two requests in a batch
+        """
         seq_group_metadata_lists = []
         request_id_0= "cmpl-81e2b9767b5b47bca7e649482698d385"
         seq_data_0 = {0: SequenceData(prompt_token_ids=[1, 3087, 8970, 338, 263])}
@@ -72,7 +76,6 @@ class UglyAsyncLLMEngine(LLMEngine):
             finished_seqs=[],
         )
 
-        # TODO: change this to real one
         return RequestOutput(request_id=request_id_0, prompt="", prompt_token_ids=[1, 3087, 8970, 338, 263], outputs=[], finished=False)
 
 
@@ -112,7 +115,7 @@ setattr(AsyncLLMEngine, "_engine_class", UglyAsyncLLMEngine)
 @pytest.mark.asyncio
 async def test_model_execution():
     # Let's build an engine_args    
-    engine_args = AsyncEngineArgs(model='/models/vicuna-7b/', tokenizer='/models/vicuna-7b/', tokenizer_mode='auto', trust_remote_code=False, download_dir=None, load_format='dummy', dtype='auto', seed=0, max_model_len=None, worker_use_ray=False, pipeline_parallel_size=1, tensor_parallel_size=1, block_size=16, swap_space=16, gpu_memory_utilization=0.9, max_num_batched_tokens=None, max_num_seqs=256, disable_log_stats=False, revision=None, tokenizer_revision=None, quantization=None, engine_use_ray=False, disable_log_requests=True, max_log_len=None)
+    engine_args = AsyncEngineArgs(model=MODEL_PATH, tokenizer=MODEL_PATH, tokenizer_mode='auto', trust_remote_code=False, download_dir=None, dtype='auto', seed=0, max_model_len=None, worker_use_ray=False, pipeline_parallel_size=1, tensor_parallel_size=1, block_size=16, swap_space=16, gpu_memory_utilization=0.9, max_num_batched_tokens=None, max_num_seqs=256, disable_log_stats=False, revision=None, tokenizer_revision=None, quantization=None, engine_use_ray=False, disable_log_requests=True, max_log_len=None)
     # Start the engine
     engine = AsyncLLMEngine.from_engine_args(engine_args)
 
@@ -121,7 +124,3 @@ async def test_model_execution():
     await engine.engine.step_async()
     # Now let's try something difficult
     await engine.engine.step_async_multiple()
-
-
-
-

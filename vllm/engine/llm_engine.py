@@ -25,10 +25,6 @@ if ray:
 if TYPE_CHECKING:
     from ray.util.placement_group import PlacementGroup
 
-import logging
-
-logging.basicConfig(level=logging.INFO)
-
 logger = init_logger(__name__)
 
 _LOGGING_INTERVAL_SEC = 5
@@ -118,6 +114,7 @@ class LLMEngine:
         # self._init_cache()
 
         # Create the scheduler.
+        # Co(gc): we create a fixed scheduler
         self.scheduler = FixedWindowScheduler(scheduler_config, cache_config)
 
         # Logging.
@@ -365,16 +362,16 @@ class LLMEngine:
             parent_seq.seq_id: []
             for parent_seq in parent_seqs
         }
-        # parent_child_dict = {seq_id: [SampleOutputs]}
+        # Co(gc):parent_child_dict = {seq_id: [SampleOutputs]}
         for sample in samples:
             parent_child_dict[sample.parent_seq_id].append(sample)
         # List of (child, parent)
         child_seqs: List[Tuple[Sequence, Sequence]] = []
 
         # Process the child samples for each parent sequence
-        # For each child samples, create a sequence, and add it the child_seqs
+        # Co(gc): For each child samples, create a sequence, and add it the child_seqs
         for parent in parent_seqs:
-            # Get all the child_samples, SequenceOuptuts
+            # Co(gc): Get all the child_samples, SequenceOuptuts
             child_samples: List[SequenceOutputs] = parent_child_dict[
                 parent.seq_id]
             # We do not have any SequenceOutputs
@@ -387,7 +384,7 @@ class LLMEngine:
                 self.scheduler.free_seq(parent)
                 continue
             # Fork the parent sequence if there are multiple child samples.
-            # The outputs diverges, we need to fork the requests
+            # Co(gc): The outputs diverges, we need to fork the requests
             for child_sample in child_samples[:-1]:
                 new_child_seq_id = next(self.seq_counter)
                 child = parent.fork(new_child_seq_id)
@@ -407,7 +404,6 @@ class LLMEngine:
             self._check_stop(seq, seq_group.sampling_params)
 
         # Non-beam search case
-        # We probably use sampling
         if not seq_group.sampling_params.use_beam_search:
             # For newly created child sequences, add them to the sequence group
             # and fork them in block manager if they are not finished.
@@ -416,6 +412,7 @@ class LLMEngine:
                     seq_group.add(seq)
                     if not seq.is_finished():
                         pass
+                        # Co(gc): fork_seq is doing some block manager operations
                         #self.scheduler.fork_seq(parent, seq)
 
             # Free the finished and selected parent sequences' memory in block
@@ -453,7 +450,6 @@ class LLMEngine:
                 # A newly generated child sequence finishes and has a high
                 # score, so we will add it into the sequence group.
                 selected_child_seqs.append((seq, parent))
-            # For existing seqs, it should have already in the seq_group
         for seq, parent, is_new in all_finished_seqs[beam_width:]:
             if is_new:
                 # A newly generated child sequence finishes but has a low
@@ -467,11 +463,9 @@ class LLMEngine:
                 # remove it from the sequence group.
                 seq_group.remove(seq.seq_id)
 
-        # We need to decide which one should continue, for the running one
         # select the top beam_width sequences from the running
         # sequences for the next iteration to continue the beam
         # search.
-        # We only need to run beam_width - # of already finished sequences.
         running_child_seqs = [(seq, parent) for seq, parent in child_seqs
                               if not seq.is_finished()]
         # Sort the running sequences by their scores.
@@ -537,16 +531,10 @@ class LLMEngine:
             self, output: SamplerOutput,
             scheduler_outputs: SchedulerOutputs) -> List[RequestOutput]:
         # Update the scheduled sequence groups with the model outputs.
-        # Try print SamplerOutput
-        for list_of_sequence_output in output:
-            # List of SequenceOutputs
-            for seq_output in list_of_sequence_output:
-                print(seq_output.output_token)
         scheduled_seq_groups = scheduler_outputs.scheduled_seq_groups
         for seq_group, samples in zip(scheduled_seq_groups, output):
             self._process_sequence_group_samples(seq_group, samples)
 
-        print("after _process_sequence_group_samples")
         # Free the finished sequence groups.
         self.scheduler.free_finished_seq_groups()
 
@@ -556,8 +544,8 @@ class LLMEngine:
                           scheduler_outputs.ignored_seq_groups):
             request_output = RequestOutput.from_seq_group(seq_group)
             request_outputs.append(request_output)
-        print("After generating request_outputs")
 
+        # Co(gc): this logging uses GPU statements, so we disable it
         # if self.log_stats:
         #     # Log the system stats.
         #     self._log_system_stats(scheduler_outputs.prompt_run,
