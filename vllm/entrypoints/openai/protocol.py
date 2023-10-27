@@ -113,6 +113,8 @@ class CompletionResponseChoice(BaseModel):
     text: str
     logprobs: Optional[LogProbs] = None
     finish_reason: Optional[Literal["stop", "length"]] = None
+    first_token_time: Optional[float] = None
+    rest_token_time: Optional[float] = None
 
 
 class CompletionResponse(BaseModel):
@@ -129,6 +131,8 @@ class CompletionResponseStreamChoice(BaseModel):
     text: str
     logprobs: Optional[LogProbs] = None
     finish_reason: Optional[Literal["stop", "length"]] = None
+    first_token_time: Optional[float] = None
+    rest_token_time: Optional[float] = None
 
 
 class CompletionStreamResponse(BaseModel):
@@ -148,7 +152,8 @@ class ChatCompletionResponseChoice(BaseModel):
     index: int
     message: ChatMessage
     finish_reason: Optional[Literal["stop", "length"]] = None
-
+    first_token_time: Optional[float] = None
+    rest_token_time: Optional[float] = None
 
 class ChatCompletionResponse(BaseModel):
     id: str = Field(default_factory=lambda: f"chatcmpl-{random_uuid()}")
@@ -168,7 +173,8 @@ class ChatCompletionResponseStreamChoice(BaseModel):
     index: int
     delta: DeltaMessage
     finish_reason: Optional[Literal["stop", "length"]] = None
-
+    first_token_time: Optional[float] = None
+    rest_token_time: Optional[float] = None
 
 class ChatCompletionStreamResponse(BaseModel):
     id: str = Field(default_factory=lambda: f"chatcmpl-{random_uuid()}")

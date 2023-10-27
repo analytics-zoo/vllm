@@ -2,6 +2,7 @@
 import copy
 import enum
 from typing import Dict, List, Optional, Union
+import time
 
 from vllm.block import LogicalTokenBlock
 from vllm.sampling_params import SamplingParams
@@ -64,10 +65,16 @@ class SequenceData:
         self.prompt_token_ids = prompt_token_ids
         self.output_token_ids: List[int] = []
         self.cumulative_logprob = 0.0
+        self.created_timestamp = time.perf_counter()
+        self.updated_timestamp = self.created_timestamp
+        self.last_token_latency = 0.0
 
     def append_token_id(self, token_id: int, logprob: float) -> None:
         self.output_token_ids.append(token_id)
         self.cumulative_logprob += logprob
+        cur_timestamp = time.perf_counter()
+        self.last_token_latency = cur_timestamp - self.updated_timestamp
+        self.updated_timestamp = cur_timestamp
 
     def get_len(self) -> int:
         return len(self.output_token_ids) + len(self.prompt_token_ids)
@@ -85,6 +92,9 @@ class SequenceData:
         if not self.output_token_ids:
             return self.prompt_token_ids[-1]
         return self.output_token_ids[-1]
+
+    def get_last_token_latency(self) -> float:
+        return self.last_token_latency
 
     def __repr__(self) -> str:
         return (f"SequenceData("
@@ -118,6 +128,7 @@ class Sequence:
         self.data = SequenceData(prompt_token_ids)
         self.output_logprobs: List[Dict[int, float]] = []
         self.output_text = ""
+        self.output_token_latency: List[float] = []
 
         self.logical_token_blocks: List[LogicalTokenBlock] = []
         # Initialize the logical token blocks with the prompt token ids.
@@ -164,6 +175,7 @@ class Sequence:
         #self._append_tokens_to_blocks([token_id])
         self.output_logprobs.append(logprobs)
         self.data.append_token_id(token_id, logprobs[token_id])
+        self.output_token_latency.append(self.data.get_last_token_latency())
 
     def get_len(self) -> int:
         return self.data.get_len()
@@ -182,6 +194,9 @@ class Sequence:
 
     def get_output_token_ids(self) -> List[int]:
         return self.data.output_token_ids
+
+    def get_output_token_latency(self) -> List[float]:
+        return self.output_token_latency
 
     def get_cumulative_logprob(self) -> float:
         return self.data.cumulative_logprob
@@ -354,10 +369,15 @@ class SequenceOutputs:
         parent_seq_id: int,
         output_token: int,
         logprobs: Dict[int, float],
+        output_timestamp: Optional[List[float]] = None
     ) -> None:
         self.parent_seq_id = parent_seq_id
         self.output_token = output_token
         self.logprobs = logprobs
+        if output_timestamp is None:
+            self.output_timestamp = []
+        else:
+            self.output_timestamp = output_timestamp
 
     def __repr__(self) -> str:
         return (f"SequenceOutputs(parent_seq_id={self.parent_seq_id}, "

@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from packaging import version
+import numpy as np
 
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.async_llm_engine import AsyncLLMEngine
@@ -237,12 +238,22 @@ async def create_chat_completion(request: ChatCompletionRequest,
         index: int,
         text: str,
         finish_reason: Optional[str] = None,
+        output_token_latency: Optional[List[float]] = None,
     ) -> str:
-        choice_data = ChatCompletionResponseStreamChoice(
-            index=index,
-            delta=DeltaMessage(content=text),
-            finish_reason=finish_reason,
-        )
+        if output_token_latency is None:
+            choice_data = ChatCompletionResponseStreamChoice(
+                index=index,
+                delta=DeltaMessage(content=text),
+                finish_reason=finish_reason,
+            )
+        else:
+            choice_data = ChatCompletionResponseStreamChoice(
+                index=index,
+                delta=DeltaMessage(content=text),
+                finish_reason=finish_reason,
+                first_token_time=output_token_latency[0],
+                rest_token_time=np.mean(output_token_latency[1:])
+            )
         response = ChatCompletionStreamResponse(
             id=request_id,
             created=created_time,
@@ -260,6 +271,7 @@ async def create_chat_completion(request: ChatCompletionRequest,
                 index=i,
                 delta=DeltaMessage(role="assistant"),
                 finish_reason=None,
+                output_token_latency=None,
             )
             chunk = ChatCompletionStreamResponse(id=request_id,
                                                  choices=[choice_data],
@@ -279,6 +291,7 @@ async def create_chat_completion(request: ChatCompletionRequest,
                 response_json = create_stream_response_json(
                     index=i,
                     text=delta_text,
+                    output_token_latency=output.output_token_latency,
                 )
                 yield f"data: {response_json}\n\n"
                 if output.finish_reason is not None:
@@ -286,6 +299,7 @@ async def create_chat_completion(request: ChatCompletionRequest,
                         index=i,
                         text="",
                         finish_reason=output.finish_reason,
+                        output_token_latency=output.output_token_latency,
                     )
                     yield f"data: {response_json}\n\n"
         yield "data: [DONE]\n\n"
@@ -307,11 +321,20 @@ async def create_chat_completion(request: ChatCompletionRequest,
     assert final_res is not None
     choices = []
     for output in final_res.outputs:
-        choice_data = ChatCompletionResponseChoice(
-            index=output.index,
-            message=ChatMessage(role="assistant", content=output.text),
-            finish_reason=output.finish_reason,
-        )
+        if output.output_token_latency is None:
+            choice_data = ChatCompletionResponseChoice(
+                index=output.index,
+                message=ChatMessage(role="assistant", content=output.text),
+                finish_reason=output.finish_reason,
+            )
+        else:
+            choice_data = ChatCompletionResponseChoice(
+                index=output.index,
+                message=ChatMessage(role="assistant", content=output.text),
+                finish_reason=output.finish_reason,
+                first_token_time=output.output_token_latency[0],
+                rest_token_time=np.mean(output.output_token_latency[1:]),
+            )
         choices.append(choice_data)
 
     num_prompt_tokens = len(final_res.prompt_token_ids)
@@ -452,13 +475,25 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         text: str,
         logprobs: Optional[LogProbs] = None,
         finish_reason: Optional[str] = None,
+        output_token_latency: Optional[List[float]] = None,
     ) -> str:
-        choice_data = CompletionResponseStreamChoice(
-            index=index,
-            text=text,
-            logprobs=logprobs,
-            finish_reason=finish_reason,
-        )
+        if output_token_latency is None:
+            choice_data = CompletionResponseStreamChoice(
+                index=index,
+                text=text,
+                logprobs=logprobs,
+                finish_reason=finish_reason,
+            )
+        else:
+            choice_data = CompletionResponseStreamChoice(
+                index=index,
+                text=text,
+                logprobs=logprobs,
+                finish_reason=finish_reason,
+                first_token_time=output_token_latency[0],
+                rest_token_time=np.mean(output_token_latency[1:]),
+            )
+
         response = CompletionStreamResponse(
             id=request_id,
             created=created_time,
@@ -490,6 +525,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     index=i,
                     text=delta_text,
                     logprobs=logprobs,
+                    output_token_latency=output.output_token_latency,
                 )
                 yield f"data: {response_json}\n\n"
                 if output.finish_reason is not None:
@@ -500,6 +536,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                         text="",
                         logprobs=logprobs,
                         finish_reason=output.finish_reason,
+                        output_token_latency=output.output_token_latency,
                     )
                     yield f"data: {response_json}\n\n"
         yield "data: [DONE]\n\n"
@@ -525,12 +562,22 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             logprobs = create_logprobs(output.token_ids, output.logprobs)
         else:
             logprobs = None
-        choice_data = CompletionResponseChoice(
-            index=output.index,
-            text=output.text,
-            logprobs=logprobs,
-            finish_reason=output.finish_reason,
-        )
+        if output.output_token_latency is None:
+            choice_data = CompletionResponseChoice(
+                index=output.index,
+                text=output.text,
+                logprobs=logprobs,
+                finish_reason=output.finish_reason,
+            )
+        else:
+            choice_data = CompletionResponseChoice(
+                index=output.index,
+                text=output.text,
+                logprobs=logprobs,
+                finish_reason=output.finish_reason,
+                first_token_time=output.output_token_latency[0],
+                rest_token_time=np.mean(output.output_token_latency[1:]),
+            )
         choices.append(choice_data)
 
     num_prompt_tokens = len(final_res.prompt_token_ids)
