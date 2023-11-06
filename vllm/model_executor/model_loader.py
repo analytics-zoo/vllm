@@ -7,7 +7,7 @@ import torch.nn as nn
 from transformers import PretrainedConfig
 
 from vllm.config import ModelConfig
-from vllm.model_executor.models import BigDLLlamaForCausalLM  # pylint: disable=wildcard-import
+from vllm.model_executor.models import BigDLLlamaForCausalLM, BigDLBloomForCausalLM  # pylint: disable=wildcard-import
 from vllm.model_executor.weight_utils import (get_quant_config,
                                               initialize_dummy_weights)
 
@@ -16,7 +16,7 @@ _MODEL_REGISTRY = {
     # "AquilaModel": AquilaForCausalLM,
     # "BaiChuanForCausalLM": BaiChuanForCausalLM,  # baichuan-7b
     # "BaichuanForCausalLM": BaichuanForCausalLM,  # baichuan-13b
-    # "BloomForCausalLM": BloomForCausalLM,
+    "BloomForCausalLM": BigDLBloomForCausalLM,
     # "FalconForCausalLM": FalconForCausalLM,
     # "GPT2LMHeadModel": GPT2LMHeadModel,
     # "GPTBigCodeForCausalLM": GPTBigCodeForCausalLM,

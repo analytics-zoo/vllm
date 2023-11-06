@@ -4,6 +4,8 @@ from typing import Dict, List, Tuple, Optional
 
 import torch
 import torch.distributed
+import torchvision.models as models
+from torch.profiler import profile, record_function, ProfilerActivity
 
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig)
@@ -57,6 +59,7 @@ class Worker:
         """
         for seq_id in finished_seqs:
             if seq_id not in self.kv_cache.keys():
+                continue
                 raise ValueError(
                     f"Duplicate key {seq_id} received during clean worker's KVCache"
                 )
@@ -338,9 +341,17 @@ class Worker:
         # pdb.set_trace()
         #TODO: use environment/global virable to check
         if True:
+            # with profile(activities=[ProfilerActivity.CPU], record_shapes=True) as prof:
+            #     with record_function("model_inference"):
+            #         output = self.model(
+            #             seq_group_meta_data_lists=seq_group_metadata_list,
+            #             kv_cache=self.kv_cache)
+
             output = self.model(
-                seq_group_meta_data_lists=seq_group_metadata_list,
-                kv_cache=self.kv_cache)
+                        seq_group_meta_data_lists=seq_group_metadata_list,
+                        kv_cache=self.kv_cache)
+
+            # print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=10))
             return output
         else:
             # Prepare input tensors.
