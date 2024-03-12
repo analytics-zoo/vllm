@@ -85,11 +85,13 @@ def run_vllm(
         max_model_len=max_model_len,
         enforce_eager=enforce_eager,
         device=device,
+        gpu_memory_utilization=0.85,
     )
 
     # Add the requests to the engine.
     for prompt, _, output_len in requests:
         sampling_params = SamplingParams(
+            
             n=n,
             temperature=0.0 if use_beam_search else 1.0,
             top_p=1.0,

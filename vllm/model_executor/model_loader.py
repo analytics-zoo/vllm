@@ -62,7 +62,7 @@ def get_model(model_config: ModelConfig,
     with _set_default_torch_dtype(model_config.dtype):
         # Create a model instance.
         # The weights will be initialized as empty tensors.
-        with torch.device(device_config.device):
+        with torch.device("cpu"):
             model = model_class(model_config.hf_config, linear_method)
         if model_config.load_format == "dummy":
             # NOTE(woosuk): For accurate performance evaluation, we assign
@@ -76,5 +76,16 @@ def get_model(model_config: ModelConfig,
 
     if is_xpu():
         import intel_extension_for_pytorch as ipex
-        model = ipex.optimize(model)
+        # model = ipex.optimize(model)
+        from bigdl.llm import optimize_model
+        # print(model)
+        # input("pause")
+        optimize_model(model)
+        # print("optimized ***********************************")
+        # print(model)
+        model = model.to(device=device_config.device, dtype=model_config.dtype)
+        # import gc
+        # gc.collect()
+        # torch.xpu.empty_cache()
+        # input("pause")
     return model
