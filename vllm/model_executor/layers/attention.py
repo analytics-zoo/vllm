@@ -150,6 +150,7 @@ class PagedAttention(nn.Module):
                     value = value.unflatten(0, (batch_size, seq_len))
 
                 if is_xpu():
+                    print("We are here at scaled dot product")
                     new_shape = (seq_len * batch_size + 8 - 1) & 0xFFFFFFF8
                     attn_mask = input_metadata.attn_bias.materialize(
                         (1, new_shape, new_shape),

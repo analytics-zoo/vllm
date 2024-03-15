@@ -75,12 +75,13 @@ def get_model(model_config: ModelConfig,
     model = model.eval()
 
     if is_xpu():
+        # print("#####We are here at is_xpu", flush=True)
         import intel_extension_for_pytorch as ipex
         # model = ipex.optimize(model)
         from bigdl.llm import optimize_model
         # print(model)
         # input("pause")
-        optimize_model(model)
+        optimize_model(model, low_bit="fp16")
         # print("optimized ***********************************")
         # print(model)
         model = model.to(device=device_config.device, dtype=model_config.dtype)

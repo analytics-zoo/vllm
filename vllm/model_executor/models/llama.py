@@ -113,7 +113,8 @@ class LlamaAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.rope_theta = rope_theta
         self.max_position_embeddings = max_position_embeddings
-
+        # print(f"For llama model: hidden_size-{hidden_size}, heads:{self.head_dim},
+        #       ")
         self.qkv_proj = QKVParallelLinear(
             hidden_size,
             self.head_dim,
