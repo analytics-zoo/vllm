@@ -135,6 +135,7 @@ class MistralAttention(nn.Module):
             max_position=max_position,
             base=self.rope_theta,
         )
+        # self.attn = PagedAttention(self.num_heads,
         self.attn = PagedAttention(self.num_heads,
                                    self.head_dim,
                                    self.scaling,

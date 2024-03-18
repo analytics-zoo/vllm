@@ -1,6 +1,6 @@
 """Multi-head attention."""
 from typing import List, Optional
-
+from functools import lru_cache
 import torch
 import torch.nn as nn
 from xformers import ops as xops
@@ -104,6 +104,8 @@ class PagedAttention(nn.Module):
 
         if input_metadata.is_prompt:
             # Prompt run.
+            # import pdb
+            # pdb.set_trace()
             if self.num_kv_heads != self.num_heads:
                 # As of Nov 2023, xformers only supports MHA. For MQA/GQA,
                 # project the key and value tensors to the desired number of
@@ -129,6 +131,8 @@ class PagedAttention(nn.Module):
                     if self.alibi_slopes is None:
                         attn_bias = BlockDiagonalCausalMask.from_seqlens(
                             [seq_len] * batch_size)
+                        # attn_bias = BlockDiagonalCausalMask.from_seqlens(
+                        #     [seq_len])
                         if self.sliding_window is not None:
                             attn_bias = attn_bias.make_local_attention(
                                 self.sliding_window)
@@ -150,19 +154,39 @@ class PagedAttention(nn.Module):
                     value = value.unflatten(0, (batch_size, seq_len))
 
                 if is_xpu():
-                    print("We are here at scaled dot product")
                     new_shape = (seq_len * batch_size + 8 - 1) & 0xFFFFFFF8
+                    # print(input_metadata.attn_bias.shape, flush=True)
                     attn_mask = input_metadata.attn_bias.materialize(
                         (1, new_shape, new_shape),
+                        # (1, 4, 4),
+                        # (1, 32, 4),
                         dtype=query.dtype,
                         device=query.device).contiguous()
                     # print(attn_mask.shape)
+                    # TODO: repeat kv
+                    # print(f"We are here at scaled dot product with different shapes:"
+                    #       f"query:{query.shape}, key:{key.shape}, value:{value.shape},"
+                    #       f"attn_mask:{attn_mask.shape}"
+                    #       f"with q.dtype: {query.dtype}"
+                    #       f"with k.dtype: {key.dtype}"
+                    #       f"with v.dtype: {value.dtype}"
+                    #       f"with attn.dtype: {attn_mask.dtype}")
+
+                    # original_shape = query.shape
+                    # import pdb
+                    # pdb.set_trace()
+                    # new_query = query.reshape(query.shape[0], query.shape[1], query.shape[2] * query.shape[3], query.shape[4])
+                    # new_key = key.reshape(key.shape[0], key.shape[1], key.shape[2] * key.shape[3], key.shape[4])
+                    # new_value = value.reshape(value.shape[0], value.shape[1], value.shape[2] * value.shape[3], value.shape[4])
+
                     out = torch.nn.functional.scaled_dot_product_attention(
                         query.movedim(1, query.dim() - 2),
                         key.movedim(1, query.dim() - 2),
                         value.movedim(1, value.dim() - 2),
                         attn_mask,
                         0.0).movedim(query.dim() - 2, 1).contiguous()
+
+                    # out = out.view(query.shape)
 
                 else:
                     out = xops.memory_efficient_attention_forward(
@@ -316,3 +340,81 @@ def _paged_attention(
             alibi_slopes,
         )
     return output
+
+
+
+class Attention(nn.Module):
+    """Attention layer.
+
+    This class takes query, key, and value tensors as input. The input tensors
+    can either contain prompt tokens or generation tokens.
+    The class does the following:
+
+    1. Store the input key and value tensors in the KV cache.
+    2. Perform (multi-head/multi-query/grouped-query) attention.
+    3. Return the output tensor.
+    """
+
+    def __init__(
+        self,
+        num_heads: int,
+        head_size: int,
+        scale: float,
+        num_kv_heads: Optional[int] = None,
+        alibi_slopes: Optional[List[float]] = None,
+        sliding_window: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+        if _use_flash_attn():
+            from vllm.model_executor.layers.attention.backends.flash_attn import FlashAttentionBackend  # noqa: E501
+            self.backend = FlashAttentionBackend(num_heads, head_size, scale,
+                                                 num_kv_heads, alibi_slopes,
+                                                 sliding_window)
+        elif is_xpu():
+            from vllm.model_executor.layers.attention.backends.torch_sdpa import TorchSDPABackend  # noqa: E501
+            self.backend = TorchSDPABackend(num_heads, head_size, scale,
+                                            num_kv_heads, alibi_slopes,
+                                            sliding_window)
+        else:
+            from vllm.model_executor.layers.attention.backends.xformers import XFormersBackend  # noqa: E501
+            self.backend = XFormersBackend(num_heads, head_size, scale,
+                                           num_kv_heads, alibi_slopes,
+                                           sliding_window)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        key_cache: Optional[torch.Tensor],
+        value_cache: Optional[torch.Tensor],
+        input_metadata: InputMetadata,
+    ) -> torch.Tensor:
+        return self.backend.forward(query, key, value, key_cache, value_cache,
+                                    input_metadata)
+
+
+@lru_cache(maxsize=1)
+def _use_flash_attn() -> bool:
+    try:
+        import flash_attn  # noqa: F401
+    except ImportError:
+        logger.info("flash_attn is not found. Using xformers backend.")
+        return False
+
+    if is_hip():
+        # AMD GPUs.
+        return False
+    if torch.cuda.get_device_capability()[0] < 8:
+        # Volta and Turing NVIDIA GPUs.
+        logger.info("flash_attn is not supported on Turing or older GPUs. "
+                    "Using xformers backend.")
+        return False
+    if torch.get_default_dtype() not in (torch.float16, torch.bfloat16):
+        logger.info(
+            "flash_attn only supports torch.float16 or torch.bfloat16. "
+            "Using xformers backend.")
+        return False
+
+    logger.info("Using flash_attn backend.")
+    return True

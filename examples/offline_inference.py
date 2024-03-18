@@ -11,8 +11,8 @@ prompts = [
 sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
 
 # Create an LLM.
-llm = LLM(model="/home/wangruonan/llm-models/Mistral-7B-v0.1/", device="xpu", enforce_eager=True, dtype="half")
-# llm = LLM(model="/home/wangruonan/llm-models/Llama-2-7b-chat-hf/", device="xpu", enforce_eager=True, dtype="half")
+# llm = LLM(model="/home/wangruonan/llm-models/Mistral-7B-v0.1/", device="xpu", enforce_eager=True, dtype="float16")
+llm = LLM(model="/home/wangruonan/llm-models/Llama-2-7b-chat-hf/", device="xpu", enforce_eager=True, dtype="half")
 # Generate texts from the prompts. The output is a list of RequestOutput objects
 # that contain the prompt, generated text, and other information.
 outputs = llm.generate(prompts, sampling_params)
