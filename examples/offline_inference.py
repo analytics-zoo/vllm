@@ -13,7 +13,8 @@ sampling_params = SamplingParams(temperature=0.8, top_p=0.95, max_tokens=128)
 # Create an LLM.
 # /home/wangruonan/llm-models/Mistral-7B-Instruct-v0.1/
 # llm = LLM(model="/home/wangruonan/llm-models/Mistral-7B-v0.1/", device="xpu", enforce_eager=True, dtype="float16")
-llm = LLM(model="/home/wangruonan/llm-models/Mistral-7B-Instruct-v0.1/", device="xpu", enforce_eager=True, dtype="float16")
+# llm = LLM(model="/home/wangruonan/llm-models/Mistral-7B-Instruct-v0.1/", device="xpu", enforce_eager=True, dtype="float16")
+llm = LLM(model="/home/wangruonan/llm-models/models--mistralai--Mixtral-8x7B-Instruct-v0.1/snapshots/125c431e2ff41a156b9f9076f744d2f35dd6e67a/", device="xpu", enforce_eager=True, dtype="float16", gpu_memory_utilization=0.70)
 # llm = LLM(model="/home/wangruonan/llm-models/Llama-2-7b-chat-hf/", device="xpu", enforce_eager=True, dtype="float16")
 # Generate texts from the prompts. The output is a list of RequestOutput objects
 # that contain the prompt, generated text, and other information.
