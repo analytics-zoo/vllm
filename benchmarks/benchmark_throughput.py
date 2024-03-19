@@ -72,8 +72,10 @@ def run_vllm(
     max_model_len: Optional[int],
     enforce_eager: bool,
     device: str,
+    utilization_rate: float,
 ) -> float:
     from vllm import LLM, SamplingParams
+    print(f"Executing with utilization rate {utilization_rate}")
     llm = LLM(
         model=model,
         tokenizer=tokenizer,
@@ -85,11 +87,32 @@ def run_vllm(
         max_model_len=max_model_len,
         enforce_eager=enforce_eager,
         device=device,
+        gpu_memory_utilization=utilization_rate,
     )
+
+    warm_prompt = "hi " * (1024 - 1)
+    warm_requests = [(warm_prompt, 1024, 1024)
+                    for _ in range(1)]
+    for prompt, _, output_len in warm_requests:
+        sampling_params = SamplingParams(
+            n=n,
+            temperature=0.0 if use_beam_search else 1.0,
+            top_p=1.0,
+            use_beam_search=use_beam_search,
+            ignore_eos=True,
+            max_tokens=output_len,
+        )
+        llm._add_request(
+            prompt=prompt,
+            prompt_token_ids=None,
+            sampling_params=sampling_params,
+        )
+    llm._run_engine(use_tqdm=True)
 
     # Add the requests to the engine.
     for prompt, _, output_len in requests:
         sampling_params = SamplingParams(
+            
             n=n,
             temperature=0.0 if use_beam_search else 1.0,
             top_p=1.0,
@@ -209,7 +232,7 @@ def main(args: argparse.Namespace):
                                 args.seed, args.n, args.use_beam_search,
                                 args.trust_remote_code, args.dtype,
                                 args.max_model_len, True,
-                                args.device)
+                                args.device, args.utilization_rate)
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -222,8 +245,10 @@ def main(args: argparse.Namespace):
         raise ValueError(f"Unknown backend: {args.backend}")
     total_num_tokens = sum(prompt_len + output_len
                            for _, prompt_len, output_len in requests)
+    output_only_num_tokens = sum(output_len for _, prompt_len, output_len in requests)
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
-          f"{total_num_tokens / elapsed_time:.2f} tokens/s")
+          f"{total_num_tokens / elapsed_time:.2f} tokens/s, "
+          f"{output_only_num_tokens / elapsed_time:.2f} tokens/s")
 
 
 if __name__ == "__main__":
@@ -252,6 +277,7 @@ if __name__ == "__main__":
                         choices=['awq', 'gptq', 'squeezellm', None],
                         default=None)
     parser.add_argument("--tensor-parallel-size", "-tp", type=int, default=1)
+    parser.add_argument("--utilization-rate", "-ur", type=float, default=0.90)
     parser.add_argument("--n",
                         type=int,
                         default=1,
