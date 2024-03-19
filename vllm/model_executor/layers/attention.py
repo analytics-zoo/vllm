@@ -111,16 +111,18 @@ class PagedAttention(nn.Module):
                 # project the key and value tensors to the desired number of
                 # heads.
                 # TODO(woosuk): Use MQA/GQA kernels for higher performance.
-                query = query.view(query.shape[0], self.num_kv_heads,
-                                   self.num_queries_per_kv, query.shape[-1])
-                key = key[:, :,
-                          None, :].expand(key.shape[0], self.num_kv_heads,
-                                          self.num_queries_per_kv,
-                                          key.shape[-1])
-                value = value[:, :, None, :].expand(value.shape[0],
-                                                    self.num_kv_heads,
-                                                    self.num_queries_per_kv,
-                                                    value.shape[-1])
+                # query = query.view(query.shape[0], self.num_kv_heads,
+                #                    self.num_queries_per_kv, query.shape[-1])
+                # key = key[:, :,
+                #           None, :].expand(key.shape[0], self.num_kv_heads,
+                #                           self.num_queries_per_kv,
+                #                           key.shape[-1])
+                # value = value[:, :, None, :].expand(value.shape[0],
+                #                                     self.num_kv_heads,
+                #                                     self.num_queries_per_kv,
+                #                                     value.shape[-1])
+                key = torch.repeat_interleave(key, self.num_queries_per_kv, dim=1)
+                value = torch.repeat_interleave(value, self.num_queries_per_kv, dim=1)
             # normal attention
             if (key_cache is None or value_cache is None
                     or input_metadata.block_tables.numel() == 0):
