@@ -207,7 +207,7 @@ class EngineArgs:
             "--device",
             type=str,
             default="cuda",
-            choices=["cuda"],
+            choices=["cuda", "xpu"],
             help=
             'device type for vLLM execution, supporting CUDA only currently.')
         return parser
