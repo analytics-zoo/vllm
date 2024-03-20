@@ -383,7 +383,7 @@ def _sample(
         sample_metadata[sampling_type] = (seq_group_ids, seq_groups,
                                           is_prompts, sample_indices)
         if sampling_type == SamplingType.GREEDY:
-            greedy_samples = torch.argmax(logprobs[sample_indices], dim=-1)
+            greedy_samples = torch.argmax(logprobs[sample_indices.long()], dim=-1)
         elif sampling_type == SamplingType.RANDOM:
             max_best_of = 1
             for seq_group, is_prompt in zip(seq_groups, is_prompts):
@@ -391,10 +391,10 @@ def _sample(
                     _, sampling_params = seq_group
                     max_best_of = max(max_best_of, sampling_params.best_of)
             multinomial_samples = _multinomial(
-                probs.cpu()[sample_indices.cpu()],  #FIXME: this is an ipex bug
+                probs[sample_indices.long()],  #FIXME: this is an ipex bug
                 max_best_of)
         elif sampling_type == SamplingType.BEAM:
-            beam_search_logprobs = logprobs[sample_indices]
+            beam_search_logprobs = logprobs[sample_indices.long()]
         else:
             raise ValueError(f"Unsupported sampling type: {sampling_type}")
 
