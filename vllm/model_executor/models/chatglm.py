@@ -101,7 +101,8 @@ class GLMAttention(nn.Module):
         kv_cache: KVCache,
         input_metadata: InputMetadata,
     ) -> torch.Tensor:
-        qkv, _ = self.query_key_value(hidden_states)
+        # qkv, _ = self.query_key_value(hidden_states)
+        qkv = self.query_key_value(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q, k = self.rotary_emb(position_ids, q, k)
         key_cache, value_cache = kv_cache
@@ -113,7 +114,8 @@ class GLMAttention(nn.Module):
             value_cache,
             input_metadata,
         )
-        attn_output, _ = self.dense(context_layer)
+        # attn_output, _ = self.dense(context_layer)
+        attn_output = self.dense(context_layer)
         return attn_output
 
 
@@ -154,10 +156,12 @@ class GLMMLP(nn.Module):
 
     def forward(self, hidden_states):
         # [s, b, 4hp]
-        intermediate_parallel, _ = self.dense_h_to_4h(hidden_states)
+        # intermediate_parallel, _ = self.dense_h_to_4h(hidden_states)
+        intermediate_parallel = self.dense_h_to_4h(hidden_states)
         intermediate_parallel = self.activation_func(intermediate_parallel)
         # [s, b, h]
-        output, _ = self.dense_4h_to_h(intermediate_parallel)
+        # output, _ = self.dense_4h_to_h(intermediate_parallel)
+        output = self.dense_4h_to_h(intermediate_parallel)
         return output
 
 

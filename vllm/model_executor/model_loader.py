@@ -81,7 +81,9 @@ def get_model(model_config: ModelConfig,
         from bigdl.llm import optimize_model
         # print(model)
         # input("pause")
-        optimize_model(model, low_bit="fp16")
+        # import pdb
+        # pdb.set_trace()
+        optimize_model(model, low_bit="sym_int4")
         # print("optimized ***********************************")
         # print(model)
         model = model.to(device=device_config.device, dtype=model_config.dtype)
