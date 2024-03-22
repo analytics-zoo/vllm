@@ -56,9 +56,11 @@ class QWenMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
+        # gate_up, _ = self.gate_up_proj(x)
+        gate_up = self.gate_up_proj(x)
         x = self.act_fn(gate_up)
-        x, _ = self.c_proj(x)
+        # x, _ = self.c_proj(x)
+        x = self.c_proj(x)
         return x
 
 
@@ -113,13 +115,15 @@ class QWenAttention(nn.Module):
         kv_cache: KVCache,
         input_metadata: InputMetadata,
     ) -> torch.Tensor:
-        qkv, _ = self.c_attn(hidden_states)
+        # qkv, _ = self.c_attn(hidden_states)
+        qkv = self.c_attn(hidden_states)
         q, k, v = qkv.chunk(chunks=3, dim=-1)
         q, k = self.rotary_emb(positions, q, k)
         k_cache, v_cache = kv_cache
         attn_output = self.attn(q, k, v, k_cache, v_cache, input_metadata)
 
-        output, _ = self.c_proj(attn_output)
+        # output, _ = self.c_proj(attn_output)
+        output = self.c_proj(attn_output)
         return output
 
 
