@@ -65,7 +65,7 @@ def get_model(model_config: ModelConfig, device_config: DeviceConfig,
     with _set_default_torch_dtype(model_config.dtype):
         # Create a model instance.
         # The weights will be initialized as empty tensors.
-        with torch.device(device_config.device):
+        with torch.device("cpu"):
             if hasattr(model_class, "supported_lora_modules"):
                 model = model_class(model_config.hf_config, linear_method,
                                     lora_config)
@@ -85,4 +85,18 @@ def get_model(model_config: ModelConfig, device_config: DeviceConfig,
             # Load the weights from the cached or downloaded files.
             model.load_weights(model_config.model, model_config.download_dir,
                                model_config.load_format, model_config.revision)
+        # TODO: we actually assume this is executed on XPU
+        from vllm.utils import is_xpu
+        if is_xpu():
+            from ipex_llm import optimize_model
+            # print(model)
+            # input("pause")
+            optimize_model(model)
+            # print("optimized ***********************************")
+            # print(model)
+            model = model.to(device=device_config.device, dtype=model_config.dtype)
+            # import gc
+            # gc.collect()
+            # torch.xpu.empty_cache()
+            # input("pause")
     return model.eval()
