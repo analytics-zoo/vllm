@@ -90,7 +90,26 @@ def run_vllm(
               kv_cache_dtype=kv_cache_dtype,
               device=device,
               enable_prefix_caching=enable_prefix_caching)
-
+    warm_prompt = "hi " * (1024 - 1)
+    warm_requests = [(warm_prompt, 1024, 1024)
+                    for _ in range(1)]
+    print(f"Running warmup with 1 prompt...")
+    for prompt, _, output_len in warm_requests:
+        sampling_params = SamplingParams(
+            n=n,
+            temperature=0.0 if use_beam_search else 1.0,
+            top_p=1.0,
+            use_beam_search=use_beam_search,
+            ignore_eos=True,
+            max_tokens=output_len,
+        )
+        llm._add_request(
+            prompt=prompt,
+            prompt_token_ids=None,
+            sampling_params=sampling_params,
+        )
+    llm._run_engine(use_tqdm=True)
+    print(f"Warmup completed...")
     # Add the requests to the engine.
     for prompt, _, output_len in requests:
         sampling_params = SamplingParams(
@@ -226,8 +245,10 @@ def main(args: argparse.Namespace):
         raise ValueError(f"Unknown backend: {args.backend}")
     total_num_tokens = sum(prompt_len + output_len
                            for _, prompt_len, output_len in requests)
+    output_only_num_tokens = sum(output_len for _, prompt_len, output_len in requests)
     print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
-          f"{total_num_tokens / elapsed_time:.2f} tokens/s")
+          f"{total_num_tokens / elapsed_time:.2f} tokens/s, "
+          f"{output_only_num_tokens / elapsed_time:.2f} tokens/s")
 
 
 if __name__ == "__main__":
