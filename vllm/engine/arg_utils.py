@@ -40,7 +40,7 @@ class EngineArgs:
     quantization: Optional[str] = None
     enforce_eager: bool = False
     max_context_len_to_capture: int = 8192
-    disable_custom_all_reduce: bool = False
+    disable_custom_all_reduce: bool = True
     tokenizer_pool_size: int = 0
     tokenizer_pool_type: str = "ray"
     tokenizer_pool_extra_config: Optional[dict] = None
