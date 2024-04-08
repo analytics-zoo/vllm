@@ -61,7 +61,6 @@ class SingleNodeXpuExecutor(ExecutorBase):
     ) -> None:
         print(f"Invoked into singlenodexpuexecutor")
         # TODO: change here
-        import intel_extension_for_pytorch as ipex
         self.model_config = model_config
         self.cache_config = cache_config
         self.lora_config = lora_config
@@ -281,3 +280,6 @@ class SingleNodeXpuExecutor(ExecutorBase):
             "remove_lora",
             lora_id=lora_id,
         )
+
+    def clean(self):
+        return self._run_workers("clean")

@@ -116,6 +116,7 @@ class WorkerMonitor(threading.Thread):
             logger.info("Killing local vLLM worker processes")
             for worker in self.workers:
                 worker.kill_worker()
+                worker.clean()
             # Must be done after worker task queues are all closed
             self.result_handler.close()
 
@@ -139,6 +140,7 @@ class LocalWorkerVllm(mp.Process):
 
     def __init__(self, result_handler: ResultHandler,
                  worker_factory: Callable[[], Any]) -> None:
+        import intel_extension_for_pytorch as ipex
         super().__init__(daemon=True)
         self._task_queue = mp.Queue()
         self.result_queue = result_handler.result_queue
@@ -205,14 +207,26 @@ class LocalWorkerVllm(mp.Process):
                         f"Exception in worker {mp.current_process().name} "
                         f"while processing method {method}: {e}, {tb}")
                     exception = e
+                    self.clean()
                 self.result_queue.put(
                     Result(task_id=task_id, value=output, exception=exception))
         except KeyboardInterrupt:
+            self.clean()
             pass
         except Exception:
+            self.clean()
             logger.exception("Worker failed")
 
         logger.info("Worker exiting")
+
+    def clean(self):
+        print(f"Performing self-cleaning job for worker")
+        import torch
+        torch.xpu.synchronize()
+        torch.xpu.empty_cache()
+        del self.worker.model_runner.model
+        import gc
+        gc.collect()
 
 
 def _add_prefix(file: TextIOBase, worker_name: str, pid: int) -> None:

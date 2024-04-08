@@ -130,6 +130,7 @@ def run_vllm(
 
     start = time.perf_counter()
     # FIXME(woosuk): Do not use internal method.
+    # It might be the problem of _run_engine
     llm._run_engine(use_tqdm=True)
     end = time.perf_counter()
     return end - start
@@ -367,6 +368,4 @@ if __name__ == "__main__":
         if args.tokenizer != args.model:
             raise ValueError("Tokenizer must be the same as the model for MII "
                              "backend.")
-    import pdb
-    pdb.set_trace()
     main(args)

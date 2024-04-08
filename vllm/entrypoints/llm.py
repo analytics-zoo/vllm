@@ -210,3 +210,11 @@ class LLM:
         # its previous requests.
         outputs = sorted(outputs, key=lambda x: int(x.request_id))
         return outputs
+
+    def clean_up(self):
+        if self.llm_engine.parallel_config.tensor_parallel_size == 1:
+            pass
+        else:
+            # Clean the cache, delete the model, etc. etc.
+            print("We are here")
+            self.llm_engine.model_executor.clean()
