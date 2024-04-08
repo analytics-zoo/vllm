@@ -84,6 +84,7 @@ class ModelRunner:
             self.model_config.enforce_eager = True
 
     def load_model(self) -> None:
+        # TODO: add later
         with measure_device_memory() as m:
             self.model = get_model(self.model_config,
                                    self.device_config,

@@ -77,6 +77,7 @@ def run_vllm(
     gpu_memory_utilization: float = 0.9,
 ) -> float:
     from vllm import LLM, SamplingParams
+    print(f"Ready to initialize vLLM")
     llm = LLM(model=model,
               tokenizer=tokenizer,
               quantization=quantization,
@@ -366,4 +367,6 @@ if __name__ == "__main__":
         if args.tokenizer != args.model:
             raise ValueError("Tokenizer must be the same as the model for MII "
                              "backend.")
+    import pdb
+    pdb.set_trace()
     main(args)
