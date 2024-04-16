@@ -215,10 +215,12 @@ class ModelRunner:
         # for PVC, sdpa kernel requires 8 bytes aligned on leading dimension
         if is_xpu():
 
+            device_name = torch.xpu.get_device_name()
             def align_to_8(len):
                 return (len + 8 - 1) & (~0b111)
 
-            max_prompt_len = align_to_8(max_prompt_len)
+            if device_name.startswith("Intel(R) Data Center GPU Max"):
+                max_prompt_len = align_to_8(max_prompt_len)
         input_tokens = _make_tensor_with_pad(input_tokens,
                                              max_prompt_len,
                                              pad=0,
