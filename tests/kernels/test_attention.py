@@ -4,7 +4,6 @@ from typing import List, Optional, Tuple
 import pytest
 import torch
 from vllm.utils import is_xpu
-XPU_DEVICES = ["xpu"] if is_xpu() else []
 from xformers import ops as xops
 from xformers.ops.fmha.attn_bias import BlockDiagonalCausalMask
 
@@ -13,6 +12,7 @@ from vllm.utils import get_max_shared_memory_bytes
 from vllm.utils import is_hip
 from allclose_default import get_default_atol, get_default_rtol
 
+XPU_DEVICES = ["xpu"] if is_xpu() else []
 FLOAT32_BYTES = torch.finfo(torch.float).bits // 8
 # This will change depending on the compute capability.
 # - 512 as a buffer
