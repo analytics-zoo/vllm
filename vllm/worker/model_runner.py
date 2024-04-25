@@ -1,5 +1,6 @@
 import contextlib
 import time
+import ray
 from typing import Dict, List, Optional, Tuple, Set, Union
 
 import numpy as np
@@ -86,10 +87,16 @@ class ModelRunner:
     def load_model(self) -> None:
         with measure_device_memory() as m:
             self.model = get_model(self.model_config,
-                                   self.device_config,
+                                   DeviceConfig("cpu"), 
                                    lora_config=self.lora_config,
                                    parallel_config=self.parallel_config,
                                    scheduler_config=self.scheduler_config)
+            print(self.model)
+            from ipex_llm import optimize_model
+            optimize_model(self.model, low_bit="sym_int4", torch_dtype=self.model_config.dtype)
+            self.model = self.model.to(device=self.device_config.device,
+                                       dtype=self.model_config.dtype)
+            print(self.model)
 
         self.model_memory_usage = m.consumed_memory
         logger.info(f"Loading model weights took "

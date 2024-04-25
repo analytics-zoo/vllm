@@ -200,6 +200,7 @@ class RayGPUExecutor(ExecutorBase):
             is_driver_worker=True,
         )
 
+        # We want to apply patch here before we loading the model
         # FIXME(woosuk): We are not properly initializing cupy NCCL when
         # we have multiple nodes.
         self._run_workers("init_model",
