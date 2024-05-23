@@ -126,11 +126,15 @@ class LLMEngine:
         engine_configs = engine_args.create_engine_configs()
         parallel_config = engine_configs[2]
 
+        # TODO: change later here
         # Initialize the cluster and specify the executor class.
-        if parallel_config.worker_use_ray:
-            initialize_ray_cluster(parallel_config)
-            from vllm.executor.ray_gpu_executor import RayGPUExecutor
-            executor_class = RayGPUExecutor
+        # if parallel_config.worker_use_ray:
+            # initialize_ray_cluster(parallel_config)
+            # from vllm.executor.ray_gpu_executor import RayGPUExecutor
+            # executor_class = RayGPUExecutor
+        if parallel_config.world_size > 1:
+            from vllm.executor.single_node_gpu_executor import SingleNodeXpuExecutor
+            executor_class = SingleNodeXpuExecutor
         else:
             assert parallel_config.world_size == 1, (
                 "Ray is required if parallel_config.world_size > 1.")

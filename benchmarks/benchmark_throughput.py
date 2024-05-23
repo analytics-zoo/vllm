@@ -77,6 +77,7 @@ def run_vllm(
     gpu_memory_utilization: float = 0.9,
 ) -> float:
     from vllm import LLM, SamplingParams
+    print(f"Ready to initialize vLLM")
     llm = LLM(model=model,
               tokenizer=tokenizer,
               quantization=quantization,
@@ -129,6 +130,7 @@ def run_vllm(
 
     start = time.perf_counter()
     # FIXME(woosuk): Do not use internal method.
+    # It might be the problem of _run_engine
     llm._run_engine(use_tqdm=True)
     end = time.perf_counter()
     return end - start

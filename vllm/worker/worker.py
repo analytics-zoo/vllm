@@ -262,6 +262,15 @@ class Worker:
                                                 self.model_config,
                                                 self.parallel_config)
 
+    def clean(self):
+        print(f"Perform cleanup for main process")
+        del self.model_runner.model
+        import torch
+        torch.xpu.synchronize()
+        torch.xpu.empty_cache()
+        import gc
+        gc.collect()
+
 
 def init_distributed_environment(
     parallel_config: ParallelConfig,

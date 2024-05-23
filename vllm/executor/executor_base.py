@@ -54,6 +54,9 @@ class ExecutorBase(ABC):
         exception."""
         raise NotImplementedError
 
+    def clean(self) -> None:
+        raise NotImplementedError
+
 
 class ExecutorAsyncBase(ExecutorBase):
 
