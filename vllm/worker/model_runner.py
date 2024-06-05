@@ -577,6 +577,9 @@ class ModelRunner:
             model_executable = self.graph_runners[graph_batch_size]
         else:
             model_executable = self.model
+        print(input_tokens.shape)
+        import time
+        start = time.time()
         hidden_states = model_executable(
             input_ids=input_tokens,
             positions=input_positions,
@@ -589,6 +592,8 @@ class ModelRunner:
             hidden_states=hidden_states,
             sampling_metadata=sampling_metadata,
         )
+        end = time.time()
+        print("Time used: ", (end - start)*1000)
         return output
 
     @torch.inference_mode()
