@@ -43,7 +43,8 @@ class Sampler(nn.Module):
     def _get_logits(self, hidden_states: torch.Tensor, embedding: torch.Tensor,
                     embedding_bias: Optional[torch.Tensor]) -> torch.Tensor:
         # Get the logits for the next tokens.
-        logits = torch.matmul(hidden_states, embedding.t())
+        # logits = torch.matmul(hidden_states, embedding.t())
+        logits = embedding(hidden_states)
         if embedding_bias is not None:
             logits += embedding_bias
         logits = tensor_model_parallel_gather(logits)
