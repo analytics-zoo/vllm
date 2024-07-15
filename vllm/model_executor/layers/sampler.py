@@ -40,13 +40,17 @@ class Sampler(nn.Module):
         # original vocabulary size (without LoRA).
         self.org_vocab_size = org_vocab_size or vocab_size
 
-    def _get_logits(self, hidden_states: torch.Tensor, embedding: torch.Tensor,
+    def _get_logits(self, hidden_states: torch.Tensor, embedding: torch.nn.Module,
                     embedding_bias: Optional[torch.Tensor]) -> torch.Tensor:
         # Get the logits for the next tokens.
-        logits = torch.matmul(hidden_states, embedding.t())
+        # logits = torch.matmul(hidden_states, embedding.t())
+        logits = embedding(hidden_states)
+        print(f"Before gather: {logits.shape}")
         if embedding_bias is not None:
             logits += embedding_bias
         logits = tensor_model_parallel_gather(logits)
+        if logits is not None:
+            print(f"After gather: {logits.shape}")
         # Remove paddings in vocab (if any).
         if logits is not None:
             logits = logits[:, :self.org_vocab_size]
@@ -54,7 +58,7 @@ class Sampler(nn.Module):
 
     def forward(
         self,
-        embedding: torch.Tensor,
+        embedding: torch.nn.Module,
         hidden_states: torch.Tensor,
         sampling_metadata: SamplingMetadata,
         embedding_bias: Optional[torch.Tensor] = None,
