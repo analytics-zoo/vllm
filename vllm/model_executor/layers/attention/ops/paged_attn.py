@@ -11,6 +11,8 @@ from vllm.model_executor.layers.attention.ops.prefix_prefill import (
 # Should be the same as PARTITION_SIZE in `paged_attention_v2_launcher`.
 _PARTITION_SIZE = 512
 
+next_token_time = []
+
 
 class PagedAttentionImpl:
 
@@ -46,6 +48,7 @@ class PagedAttentionImpl:
         alibi_slopes: Optional[torch.Tensor],
     ) -> torch.Tensor:
         output = torch.empty_like(query)
+        global next_token_time
 
         block_size = value_cache.shape[3]
         num_seqs, num_heads, head_size = query.shape
@@ -63,6 +66,7 @@ class PagedAttentionImpl:
             max_num_partitions == 1 or num_seqs * num_heads > 512)
         if use_v1:
             # Run PagedAttention V1.
+            print("Use v1")
             ops.paged_attention_v1(
                 output,
                 query,
@@ -79,6 +83,8 @@ class PagedAttentionImpl:
             )
         else:
             # Run PagedAttention V2.
+            import time
+            start = time.time()
             assert _PARTITION_SIZE % block_size == 0
             tmp_output = torch.empty(
                 size=(num_seqs, num_heads, max_num_partitions, head_size),
@@ -108,6 +114,12 @@ class PagedAttentionImpl:
                 alibi_slopes,
                 input_metadata.kv_cache_dtype,
             )
+            end = time.time()
+            next_token_time.append((end-start) * 1000)
+            print("avg time used: ", sum(next_token_time)/len(next_token_time))
+            if len(next_token_time) > 800:
+                print("Clear!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                next_token_time.clear()
         return output
 
     @staticmethod
