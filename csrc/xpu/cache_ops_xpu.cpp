@@ -105,7 +105,8 @@ void reshape_and_cache(
     torch::Tensor& value_cache,
     torch::Tensor& slot_mapping,
     const std::string& kv_cache_dtype,
-    const float kv_scale) {
+    const double k_scale,
+    const double v_scale) {
   int num_tokens = key.size(0);
   int num_heads = key.size(1);
   int head_size = key.size(2);
@@ -166,7 +167,7 @@ void copy_blocks_kernel(
 }
 
 template <typename scalar_t>
-void call_copy_blocks_kernel(
+void call_copy_blocks_kernel_back(
     std::vector<torch::Tensor>& key_caches,
     std::vector<torch::Tensor>& value_caches,
     const std::map<int64_t, std::vector<int64_t>>& block_mapping) {
@@ -228,10 +229,102 @@ void call_copy_blocks_kernel(
   });
 }
 
+template <typename scalar_t>
+void call_copy_blocks_kernel(
+    std::vector<torch::Tensor> const& key_caches,
+    std::vector<torch::Tensor> const& value_caches,
+    const torch::Tensor& block_mapping) {
+  using sycl_t = vllm::xpu::SyclTypeTrait<scalar_t>::Type;
+  int num_layers = key_caches.size();
+  TORCH_CHECK(num_layers == value_caches.size());
+  if (num_layers == 0) {
+    return;
+  }
+  torch::Device cache_device = key_caches[0].device();
+  TORCH_CHECK(cache_device.is_xpu());
+  // Create data structures for the kernel.
+  // Create an array of pointers to the key and value caches.
+  int64_t key_cache_ptrs[num_layers];
+  int64_t value_cache_ptrs[num_layers];
+  for (int layer_idx = 0; layer_idx < num_layers; ++layer_idx) {
+    key_cache_ptrs[layer_idx] =
+        reinterpret_cast<int64_t>(key_caches[layer_idx].data_ptr());
+    value_cache_ptrs[layer_idx] =
+        reinterpret_cast<int64_t>(value_caches[layer_idx].data_ptr());
+  }
+
+  int num_pairs = block_mapping.size(0);
+  // // Create block mapping array.
+  // std::vector<int64_t> block_mapping_vec;
+  // for (const auto& pair : block_mapping) {
+  //   int64_t src_block_number = pair.first;
+  //   for (int64_t dst_block_number : pair.second) {
+  //     block_mapping_vec.push_back(src_block_number);
+  //     block_mapping_vec.push_back(dst_block_number);
+  //   }
+  // }
+  // int64_t* block_mapping_array = block_mapping_vec.data();
+  // int num_pairs = block_mapping_vec.size() / 2;
+  // Move the data structures to the GPU.
+  // NOTE: This synchronizes the CPU and GPU.
+  torch::Tensor key_cache_ptrs_tensor =
+      torch::from_blob(key_cache_ptrs, {num_layers}, torch::kInt64)
+          .to(cache_device);
+  torch::Tensor value_cache_ptrs_tensor =
+      torch::from_blob(value_cache_ptrs, {num_layers}, torch::kInt64)
+          .to(cache_device);
+  // We already have the block mapping tensor
+  // torch::Tensor block_mapping_tensor =
+  //     torch::from_blob(block_mapping_array, {2 * num_pairs}, torch::kInt64)
+  //         .to(cache_device);
+  auto k_ptr = key_cache_ptrs_tensor.data_ptr<int64_t>();
+  auto v_ptr = value_cache_ptrs_tensor.data_ptr<int64_t>();
+  auto b_ptr = block_mapping.data_ptr<int64_t>();
+  // Launch the kernel.
+  const int numel_per_block = key_caches[0][0].numel();
+
+  sycl::range<3> grid(1, num_pairs, num_layers);
+  sycl::range<3> block(1, 1, std::min(1024, numel_per_block));
+  auto& queue = vllm::xpu::vllmGetQueue();
+  queue.submit([&](sycl::handler& cgh) {
+    cgh.parallel_for(
+        sycl::nd_range<3>(grid * block, block), [=](sycl::nd_item<3> item_ct1) {
+          copy_blocks_kernel<sycl_t>(
+              k_ptr, v_ptr, b_ptr, numel_per_block, item_ct1);
+        });
+  });
+}
+
+
+// void copy_blocks_back(
+//     std::vector<torch::Tensor>& key_caches,
+//     std::vector<torch::Tensor>& value_caches,
+//     const std::map<int64_t, std::vector<int64_t>>& block_mapping) {
+//   VLLM_XPU_DISPATCH_FLOATING_TYPES(
+//       key_caches[0].scalar_type(), "call_copy_blocks_kernel", [&] {
+//         call_copy_blocks_kernel<scalar_t>(
+//             key_caches, value_caches, block_mapping);
+//       });
+// }
+
+
+// void copy_blocks_back(
+//     std::vector<torch::Tensor>& key_caches,
+//     std::vector<torch::Tensor>& value_caches,
+//     const std::map<int64_t, std::vector<int64_t>>& block_mapping) {
+//   VLLM_XPU_DISPATCH_FLOATING_TYPES(
+//       key_caches[0].scalar_type(), "call_copy_blocks_kernel", [&] {
+//         call_copy_blocks_kernel<scalar_t>(
+//             key_caches, value_caches, block_mapping);
+//       });
+// }
+
 void copy_blocks(
-    std::vector<torch::Tensor>& key_caches,
-    std::vector<torch::Tensor>& value_caches,
-    const std::map<int64_t, std::vector<int64_t>>& block_mapping) {
+    std::vector<torch::Tensor> const& key_caches,
+    std::vector<torch::Tensor> const& value_caches,
+    // I guess is copy block from one to others
+    // Before it was int64_t -> vector<int64_t>
+    const torch::Tensor& block_mapping) {
   VLLM_XPU_DISPATCH_FLOATING_TYPES(
       key_caches[0].scalar_type(), "call_copy_blocks_kernel", [&] {
         call_copy_blocks_kernel<scalar_t>(
@@ -239,7 +332,8 @@ void copy_blocks(
       });
 }
 
-void swap_blocks(
+// swap_blocks seem not support swapping?
+void swap_blocks_back(
     torch::Tensor& src,
     torch::Tensor& dst,
     const std::map<int64_t, int64_t>& block_mapping) {
@@ -257,6 +351,29 @@ void swap_blocks(
     int64_t dst_offset = dst_block_number * block_size_in_bytes;
     queue.memcpy(
         dst_ptr + dst_offset, src_ptr + src_offset, block_size_in_bytes);
+  }
+  queue.wait();
+}
+
+void swap_blocks(
+    torch::Tensor& src,
+    torch::Tensor& dst,
+    const torch::Tensor& block_mapping) {
+  char* src_ptr = (char*)src.data_ptr();
+  char* dst_ptr = (char*)dst.data_ptr();
+
+  const int64_t block_size_in_bytes = src.element_size() * src[0].numel();
+  const int64_t num_blocks = block_mapping.size(0);
+  auto& queue = vllm::xpu::vllmGetQueue();
+
+  for (size_t i = 0; i < num_blocks; i++) {
+    int64_t src_block_number = block_mapping[i][0].item<int64_t>();
+    int64_t dst_block_number = block_mapping[i][1].item<int64_t>();
+    int64_t src_offset = src_block_number * block_size_in_bytes;
+    int64_t dst_offset = dst_block_number * block_size_in_bytes;
+    queue.memcpy(
+      dst_ptr + dst_offset, src_ptr + src_offset, block_size_in_bytes
+    );
   }
   queue.wait();
 }

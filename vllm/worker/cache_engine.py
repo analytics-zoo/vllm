@@ -63,6 +63,7 @@ class CacheEngine:
         )
 
         # Initialize the cache.
+        # [Layer0's kv_cache, layer1's kv_cache, etc.]
         self.gpu_cache = self._allocate_kv_cache(
             self.num_gpu_blocks, self.device_config.device_type)
         self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")

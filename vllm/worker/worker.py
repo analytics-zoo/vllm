@@ -226,6 +226,7 @@ class Worker(LocalOrDistributedWorkerBase):
                         self.parallel_config, self.device_config)
             for _ in range(self.parallel_config.pipeline_parallel_size)
         ]
+        # In the format of: virtual_engine, layer, kv_cache
         self.gpu_cache = [
             self.cache_engine[ve].gpu_cache
             for ve in range(self.parallel_config.pipeline_parallel_size)

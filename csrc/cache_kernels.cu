@@ -109,6 +109,9 @@ void copy_blocks(std::vector<torch::Tensor> const& key_caches,
   torch::Device cache_device = key_caches[0].device();
   TORCH_CHECK(cache_device.is_cuda());
 
+  // key_caches should be a list of tensors
+  // length equals to num_layers
+  // its dimension should be [num_blocks, block_size x kv_heads x head_size]
   // Create data structures for the kernel.
   // Create an array of pointers to the key and value caches.
   int64_t key_cache_ptrs[num_layers];

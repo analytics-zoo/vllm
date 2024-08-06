@@ -40,15 +40,20 @@ void paged_attention_v2(
     int max_context_len, const c10::optional<torch::Tensor> &alibi_slopes,
     const std::string& kv_cache_dtype, const float kv_scale);
 
-void copy_blocks(
-    std::vector<torch::Tensor> &key_caches,
-    std::vector<torch::Tensor> &value_caches,
-    const std::map<int64_t, std::vector<int64_t>> &block_mapping);
+// void copy_blocks(
+//     std::vector<torch::Tensor> &key_caches,
+//     std::vector<torch::Tensor> &value_caches,
+//     const std::map<int64_t, std::vector<int64_t>> &block_mapping);
+
+void copy_blocks(std::vector<torch::Tensor> const& key_caches,
+                 std::vector<torch::Tensor> const& value_caches,
+                 const torch::Tensor& block_mapping);
 
 void reshape_and_cache(torch::Tensor &key, torch::Tensor &value,
                            torch::Tensor &key_cache, torch::Tensor &value_cache,
                            torch::Tensor &slot_mapping,
-                           const std::string& kv_cache_dtype, const float kv_scale);
+                           const std::string& kv_cache_dtype, const double k_scale,
+                           const double v_scale);
 
 void moe_align_block_size(
   torch::Tensor topk_ids,
@@ -60,7 +65,7 @@ void moe_align_block_size(
   TORCH_CHECK(false, "moe_align_block_size is not supported on XPU.");
 }
 void swap_blocks(torch::Tensor &src, torch::Tensor &dst,
-                     const std::map<int64_t, int64_t> &block_mapping);
+                     const torch::Tensor& block_mapping);
 
 void gather_cached_kv(torch::Tensor &key, torch::Tensor &value,
                           torch::Tensor &key_cache, torch::Tensor &value_cache,
