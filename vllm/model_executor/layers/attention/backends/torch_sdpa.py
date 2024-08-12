@@ -91,14 +91,28 @@ class TorchSDPABackend:
                 query = query.movedim(1, query.dim() - 2)
                 key = key.movedim(1, key.dim() - 2)
                 value = value.movedim(1, value.dim() - 2)
-                out = torch.nn.functional.scaled_dot_product_attention(
-                    query, 
-                    key, 
-                    value, 
-                    input_metadata.attn_bias,
-                    0.0, 
-                    is_causal=not self.need_mask,
-                    scale=self.scale).movedim(query.dim() - 2, 1).contiguous()
+                import os
+                should_split_qkv = os.getenv("IPEX_LLM_SPLIT_QKV", None)
+                if should_split_qkv is None:
+                    out = torch.nn.functional.scaled_dot_product_attention(
+                        query, 
+                        key, 
+                        value, 
+                        input_metadata.attn_bias,
+                        0.0, 
+                        is_causal=not self.need_mask,
+                        scale=self.scale).movedim(query.dim() - 2, 1).contiguous()
+                else:
+                    out = []
+                    block_size = 2
+                    query_split = torch.split(query, block_size, dim=1)
+                    key_split = torch.split(key, block_size, dim=1)
+                    value_split = torch.split(value, block_size, dim=1)
+                    for q, k, v in zip(query_split, key_split, value_split):
+                        out_split = torch.nn.functional.scaled_dot_product_attention(
+                            q, k, v, input_metadata.attn_bias, 0.0, is_causal=not self.need_mask, scale=self.scale)
+                        out.append(out_split)
+                    out = torch.cat(out, dim=1).movedim(query.dim() - 2, 1).contiguous()
                 # output = out.view_as(query)
                 # FIXME: half input will generate float output, next ipex release will fix this.
                 output = out.view_as(query).to(query.dtype)
