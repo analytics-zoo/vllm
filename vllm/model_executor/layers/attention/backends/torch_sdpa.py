@@ -7,6 +7,15 @@ from vllm.model_executor.input_metadata import InputMetadata
 from vllm.model_executor.layers.attention.ops.paged_attn import (
     PagedAttentionImpl)
 
+
+def use_sdp_causal(head_dim, query_states):
+    return (
+        head_dim in [-1, 64, 80, 96, 128]           # for now
+        and query_states.device.type == "xpu"       # GPU
+        and query_states.dtype in [torch.float, torch.half]     # fp32/fp16
+    )
+
+
 class TorchSDPABackend:
 
     def __init__(
@@ -88,20 +97,28 @@ class TorchSDPABackend:
                 key = key.unflatten(0, (batch_size, seq_len))
                 value = value.unflatten(0, (batch_size, seq_len))
 
-                query = query.movedim(1, query.dim() - 2)
-                key = key.movedim(1, key.dim() - 2)
-                value = value.movedim(1, value.dim() - 2)
+                query = query.movedim(1, query.dim() - 2).contiguous()
+                key = key.movedim(1, key.dim() - 2).contiguous()
+                value = value.movedim(1, value.dim() - 2).contiguous()
+                # Get query, key, value
                 import os
                 should_split_qkv = os.getenv("IPEX_LLM_SPLIT_QKV", None)
                 if should_split_qkv is None:
-                    out = torch.nn.functional.scaled_dot_product_attention(
-                        query, 
-                        key, 
-                        value, 
-                        input_metadata.attn_bias,
-                        0.0, 
-                        is_causal=not self.need_mask,
-                        scale=self.scale).movedim(query.dim() - 2, 1).contiguous()
+                    # Output is attention output
+                    if use_sdp_causal(self.head_size, query):
+                        import xe_addons
+                        out = xe_addons.sdp_causal(query, key, value, input_metadata.attn_bias)
+                        out = out.transpose(2,1).contiguous()
+                    else:
+                        # Use default scaled_dot_product_attention
+                        out = torch.nn.functional.scaled_dot_product_attention(
+                            query,
+                            key,
+                            value,
+                            input_metadata.attn_bias,
+                            0.0,
+                            is_causal=not self.need_mask,
+                            scale=self.scale).movedim(query.dim() - 2, 1).contiguous()
                 else:
                     out = []
                     block_size = 2
