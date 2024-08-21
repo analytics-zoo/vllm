@@ -122,12 +122,19 @@ class TorchSDPABackend:
                 else:
                     out = []
                     block_size = 2
+                    # query/key/value should already be contiguous
+                    # We can check
+                    import xe_addons
+                    use_sdp = use_sdp_causal(self.head_size, query)
                     query_split = torch.split(query, block_size, dim=1)
                     key_split = torch.split(key, block_size, dim=1)
                     value_split = torch.split(value, block_size, dim=1)
                     for q, k, v in zip(query_split, key_split, value_split):
-                        out_split = torch.nn.functional.scaled_dot_product_attention(
-                            q, k, v, input_metadata.attn_bias, 0.0, is_causal=not self.need_mask, scale=self.scale)
+                        if not use_sdp:
+                            out_split = torch.nn.functional.scaled_dot_product_attention(
+                                q, k, v, input_metadata.attn_bias, 0.0, is_causal=not self.need_mask, scale=self.scale)
+                        else:
+                            out_split = xe_addons.sdp_causal(q, k, v, input_metadata.attn_bias)
                         out.append(out_split)
                     out = torch.cat(out, dim=1).movedim(query.dim() - 2, 1).contiguous()
                 # output = out.view_as(query)
