@@ -42,25 +42,36 @@ def get_model(model_config: ModelConfig, device_config: DeviceConfig,
     lora_config = kwargs.get("lora_config", None)
     model_class = _get_model_architecture(model_config)
 
-    # Get the (maybe quantized) linear method.
     linear_method = None
     if model_config.quantization is not None:
-        quant_config = get_quant_config(model_config)
-        capability = torch.cuda.get_device_capability()
-        capability = capability[0] * 10 + capability[1]
-        if capability < quant_config.get_min_capability():
-            raise ValueError(
-                f"The quantization method {model_config.quantization} is not "
-                "supported for the current GPU. "
-                f"Minimum capability: {quant_config.get_min_capability()}. "
-                f"Current capability: {capability}.")
-        supported_dtypes = quant_config.get_supported_act_dtypes()
-        if model_config.dtype not in supported_dtypes:
-            raise ValueError(
-                f"{model_config.dtype} is not supported for quantization "
-                f"method {model_config.quantization}. Supported dtypes: "
-                f"{supported_dtypes}")
-        linear_method = quant_config.get_linear_method()
+        # Let's do a classification between cuda and gpu/cpu
+        if device_config.device_type == "cuda":
+            quant_config = get_quant_config(model_config)
+            capability = torch.cuda.get_device_capability()
+            capability = capability[0] * 10 + capability[1]
+            if capability < quant_config.get_min_capability():
+                raise ValueError(
+                    f"The quantization method {model_config.quantization} is not "
+                    "supported for the current GPU. "
+                    f"Minimum capability: {quant_config.get_min_capability()}. "
+                    f"Current capability: {capability}.")
+            supported_dtypes = quant_config.get_supported_act_dtypes()
+            if model_config.dtype not in supported_dtypes:
+                raise ValueError(
+                    f"{model_config.dtype} is not supported for quantization "
+                    f"method {model_config.quantization}. Supported dtypes: "
+                    f"{supported_dtypes}")
+            linear_method = quant_config.get_linear_method()
+        elif device_config.device_type == "xpu" or device_config.device_type == "cpu":
+            # We include cpu here simply because we optimize it through cpu and loaded it to xpu
+            quant_config = get_quant_config(model_config)
+            supported_dtypes = quant_config.get_supported_act_dtypes()
+            if model_config.dtype not in supported_dtypes:
+                raise ValueError(
+                    f"{model_config.dtype} is not supported for quantization "
+                    f"method {model_config.quantization}. Supported dtypes: "
+                    f"{supported_dtypes}")
+            linear_method = quant_config.get_linear_method()
 
     with _set_default_torch_dtype(model_config.dtype):
         # Create a model instance.
