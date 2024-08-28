@@ -681,6 +681,9 @@ class AsyncLLMEngine:
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None
     ) -> AsyncStream:
+        VTUNE_REQUEST_COUNT = int(os.environ.get("VTUNE_REQUEST_COUNT", "0"))
+        os.environ['VTUNE_REQUEST_COUNT'] = str(VTUNE_REQUEST_COUNT + 1)
+        os.environ['VTUNE_TOCKEN_COUNT'] = str(0)
         if not self.is_running:
             if self.start_engine_loop:
                 self.start_background_loop()

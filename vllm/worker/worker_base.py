@@ -270,11 +270,33 @@ class LocalOrDistributedWorkerBase(WorkerBase):
                 get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group()))
 
+        import itt
+        itt_is_start = False
+        if self.rank == 0:
+            VTUNE_REQUEST_COUNT = int(os.environ.get("VTUNE_REQUEST_COUNT", "0"))
+            VTUNE_TOCKEN_COUNT = int(os.environ.get("VTUNE_TOCKEN_COUNT", "0"))
+            VTUNE_CAPTURE_FIRSTTOCKEN = int(os.environ.get("VTUNE_CAPTURE_FIRSTTOCKEN", "0"))
+            is_capture = False
+            if VTUNE_REQUEST_COUNT > 2 :#skip warmup
+                if VTUNE_CAPTURE_FIRSTTOCKEN == 0:#next tocken
+                    if VTUNE_TOCKEN_COUNT > 0:
+                        is_capture = True
+                else:#first tocken
+                    if VTUNE_TOCKEN_COUNT == 0:
+                        is_capture = True
+            if is_capture:
+                itt.resume()
+                itt_is_start = True
+            os.environ['VTUNE_TOCKEN_COUNT'] = str(VTUNE_TOCKEN_COUNT + 1)
+
         output = self.model_runner.execute_model(
             model_input, self.kv_cache[worker_input.virtual_engine]
             if self.kv_cache is not None else None, intermediate_tensors,
             num_steps)
 
+        if self.rank == 0 and itt_is_start:
+            itt.pause()
+            
         if not get_pp_group().is_last_rank:
             # output is IntermediateTensors
             get_pp_group().send_tensor_dict(output.tensors,
