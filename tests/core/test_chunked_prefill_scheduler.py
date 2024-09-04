@@ -528,6 +528,7 @@ def test_chunked_prefill_max_seqs():
                                        enable_chunked_prefill=True)
     cache_config = CacheConfig(block_size, 1.0, 1, "auto")
     cache_config.num_cpu_blocks = 8
+    # Only valid for 32 tokens
     cache_config.num_gpu_blocks = 8
     scheduler = Scheduler(scheduler_config, cache_config, None)
     running: List[SequenceGroup] = []

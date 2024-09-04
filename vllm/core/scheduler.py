@@ -446,6 +446,9 @@ class Scheduler:
 
         while running_queue:
             seq_group = running_queue[0]
+            # Here, we do a different thing, -> get enable chunking...
+            # I guess, if chunking is enabled, the prefill requets will keep a record of how many tokens
+            # have been prefilled...
             num_running_tokens = self._get_num_new_tokens(
                 seq_group, SequenceStatus.RUNNING, enable_chunking, budget)
 
@@ -453,6 +456,7 @@ class Scheduler:
                 break
 
             running_queue.popleft()
+            # Remove other sequences to get some space
             while not self._can_append_slots(seq_group):
                 budget.subtract_num_batched_tokens(seq_group.request_id,
                                                    num_running_tokens)
@@ -506,7 +510,10 @@ class Scheduler:
                     budget.add_num_seqs(seq_group.request_id, num_running_seqs)
                 if curr_loras is not None and seq_group.lora_int_id > 0:
                     curr_loras.add(seq_group.lora_int_id)
-
+        
+        print("#####################################Debug#################################")
+        print(f"Decode sequence group length:{len(decode_seq_groups)}, Prefill sequence group length:{len(prefill_seq_groups)}")
+        print("#####################################Debug end#############################")
         return SchedulerRunningOutputs(
             decode_seq_groups=decode_seq_groups,
             prefill_seq_groups=prefill_seq_groups,
@@ -515,7 +522,7 @@ class Scheduler:
             blocks_to_swap_out=blocks_to_swap_out,
             blocks_to_copy=blocks_to_copy,
             num_lookahead_slots=self._get_num_lookahead_slots(
-                is_prefill=False))
+            is_prefill=False))
 
     def _schedule_swapped(
         self,

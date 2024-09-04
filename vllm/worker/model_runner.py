@@ -86,9 +86,14 @@ class ModelInputForGPU(ModelRunnerInputBase):
     runners that run additional steps should subclass this method to add
     additional fields.
     """
+    # How are these things are organized? and what are these meaning..
+    # this should be: [chunked prefill tokens, generation tokens]
     input_tokens: Optional[torch.Tensor] = None
+    # Position for the input tokens [0, 1, 2, 45, 46, 47, 9, 4, 5] for instance...
     input_positions: Optional[torch.Tensor] = None
+    # seq_len for the tokens? [prefill seq_len1, prefill seq_len2, etc...]
     seq_lens: Optional[List[int]] = None
+    # TODO:
     query_lens: Optional[List[int]] = None
     lora_mapping: Optional["LoRAMapping"] = None
     lora_requests: Optional[Set[LoRARequest]] = None
