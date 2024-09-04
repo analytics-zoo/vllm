@@ -49,6 +49,8 @@ class RMSNorm(nn.Module):
         residual: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         if residual is not None:
+            if isinstance(x, tuple):
+                x = x[0]
             ops.fused_add_rms_norm(
                 x,
                 residual,
