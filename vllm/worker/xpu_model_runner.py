@@ -343,6 +343,7 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
             num_decode_tokens=len(input_tokens),
             num_prefills=0,
             block_tables=block_tables,
+            query_start_loc=None
         )
         return (
             input_tokens,
@@ -469,6 +470,17 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
         slot_mapping = torch.tensor(slot_mapping,
                                     dtype=torch.long,
                                     device=self.device)  # type: ignore
+        seq_lens_tensor = torch.tensor(seq_lens,
+                                       dtype=torch.int,
+                                       device=self.device)
+        # Prepare query_start_loc
+        query_start_loc = torch.zeros(len(seq_lens) + 1,
+                                      dtype=torch.int32,
+                                      device=self.device)
+        torch.cumsum(seq_lens_tensor,
+                     dim=0,
+                     dtype=query_start_loc.dtype,
+                     out=query_start_loc[1:])
 
         max_seqlen = max(seq_lens)
         tmp = [0]
@@ -482,12 +494,13 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
             seq_lens=seq_lens,
             seqlen_q=seqlen_q,
             max_seqlen=max_seqlen,
-            seq_lens_tensor=None,
+            seq_lens_tensor=seq_lens_tensor,
             max_decode_seq_len=None,
             num_prefills=len(seq_lens),
             num_prefill_tokens=num_prompt_tokens,
             num_decode_tokens=0,
             block_tables=torch.tensor([], device=self.device, dtype=torch.int),
+            query_start_loc=query_start_loc,
         )
 
         multi_modal_kwargs = MultiModalInputs.batch(multi_modal_inputs_list)

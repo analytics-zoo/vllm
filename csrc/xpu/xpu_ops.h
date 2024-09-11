@@ -50,6 +50,13 @@ void reshape_and_cache(torch::Tensor &key, torch::Tensor &value,
                            torch::Tensor &slot_mapping,
                            const std::string& kv_cache_dtype, const float kv_scale);
 
+torch::Tensor context_attention_forward(
+    torch::Tensor query,  // [num_tokens, num_kv_head, head_dim]
+    torch::Tensor key,    // [num_tokens, num_kv_heads * head_size]
+    torch::Tensor value,  // [num_tokens, num_kv_heads * head_size]
+    torch::Tensor query_start_loc, torch::Tensor seq_lens,
+    int max_input_length);
+
 void moe_align_block_size(
   torch::Tensor topk_ids,
   int num_experts,
