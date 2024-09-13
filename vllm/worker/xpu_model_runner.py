@@ -378,6 +378,7 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
                      dim=0,
                      dtype=seq_start_loc.dtype,
                      out=seq_start_loc[1:])
+        # FIXME: torch.long, is this the correct datapoint?
         input_tokens_tensor = torch.tensor(input_tokens,
                                            dtype=torch.long,
                                            device=self.device)
@@ -394,6 +395,9 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
         query_lens_tensor = torch.tensor(query_lens,
                                          dtype=torch.long,
                                          device=self.device)
+        seq_lens_tensor = torch.tensor(seq_lens,
+                                       dtype=torch.int,
+                                       device=self.device)
 
         query_start_loc = torch.zeros(query_lens_tensor.shape[0] + 1,
                                       dtype=torch.int32,
@@ -423,7 +427,7 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
             slot_mapping=slot_mapping_tensor, # 2
             num_prefill_tokens=num_prefill_tokens, # 7
             num_decode_tokens=num_decode_tokens, # 8
-            seq_lens=seq_lens, # 3
+            seq_lens=seq_lens_tensor, # 3
             seqlen_q=seqlen_q, # 4
             max_seqlen=max_seqlen, # 5
             seq_lens_tensor=seq_lens_tensor, # 9
@@ -443,8 +447,8 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
             query_lens,
             self.device,
             pin_memory=False)
-        import pdb
-        pdb.set_trace()
+        # import pdb
+        # pdb.set_trace()
         print(f"New input_tokens' shape:{input_tokens_tensor.shape}")
         return ModelInputForXPU(
             input_tokens=input_tokens_tensor,

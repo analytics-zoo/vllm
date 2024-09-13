@@ -11,22 +11,22 @@ if triton.__version__ >= "2.1.0":
 
     @triton.jit
     def _fwd_kernel(
-        Q,
-        K,
-        V,
-        K_cache,
+        Q, # Query
+        K, # Key
+        V, # Value
+        K_cache, 
         V_cache,
-        B_Loc,
-        sm_scale,
-        B_Start_Loc,
-        B_Seqlen,
-        B_Ctxlen,
-        block_size,
-        x,
-        Out,
-        stride_b_loc_b,
-        stride_b_loc_s,
-        stride_qbs,
+        B_Loc, # Block table
+        sm_scale, # 1.0 / head_dim ** 0.5 
+        B_Start_Loc, # query_start_loc
+        B_Seqlen, # seq_lens
+        B_Ctxlen, # Context_lens
+        block_size, # block_size
+        x, # x in kv_cache
+        Out, # output
+        stride_b_loc_b, # block_table.stride(0)
+        stride_b_loc_s, # block_table.stride(1)
+        stride_qbs, 
         stride_qh,
         stride_qd,
         stride_kbs,
@@ -48,7 +48,7 @@ if triton.__version__ >= "2.1.0":
         stride_v_cache_d,
         stride_v_cache_bl,
         num_queries_per_kv: int,
-        BLOCK_M: tl.constexpr,
+        BLOCK_M: tl.constexpr, # BLOCK
         BLOCK_DMODEL: tl.constexpr,  # head size
         BLOCK_DMODEL_PADDED: tl.constexpr,  # head size padded to a power of 2
         BLOCK_N: tl.constexpr,
@@ -62,6 +62,7 @@ if triton.__version__ >= "2.1.0":
 
         cur_batch_ctx_len = tl.load(B_Ctxlen + cur_batch)
         cur_batch_seq_len = tl.load(B_Seqlen + cur_batch)
+        # start location for the query
         cur_batch_in_all_start_index = tl.load(B_Start_Loc + cur_batch)
         cur_batch_query_len = cur_batch_seq_len - cur_batch_ctx_len
 
@@ -74,7 +75,7 @@ if triton.__version__ >= "2.1.0":
         offs_n = tl.arange(0, BLOCK_N)
         # [D]; starts at 0
         offs_d = tl.arange(0, BLOCK_DMODEL_PADDED)
-        # [M]; starts at current position in query
+        # [M]; starts at current position in query # For this workgroup, this should be [start, start + WGS]
         offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
         # [M,D]
         off_q = (
@@ -85,6 +86,7 @@ if triton.__version__ >= "2.1.0":
             tl.arange(0, BLOCK_DMODEL_PADDED) < BLOCK_DMODEL, 1,
             0).to(tl.int1)  # [D]
 
+        # Load q where 
         q = tl.load(Q + off_q,
                     mask=dim_mask[None, :] &
                     (offs_m[:, None] < cur_batch_query_len),
@@ -677,11 +679,11 @@ if triton.__version__ >= "2.1.0":
                               o,
                               k_cache,
                               v_cache,
-                              b_loc,
-                              b_start_loc,
-                              b_seq_len,
+                              b_loc, # block table
+                              b_start_loc, # query_start_loc
+                              b_seq_len, # sequence_length_tensor
                               b_ctx_len,
-                              max_input_len,
+                              max_input_len, # max query len
                               alibi_slopes=None,
                               sliding_window=None):
 

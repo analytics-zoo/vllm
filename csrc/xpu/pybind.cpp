@@ -16,6 +16,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     &paged_attention_v2,
     "PagedAttention V2.");
 
+  ops.def(
+    "context_attention_forward",
+    &context_attention_forward,
+    "Context attention forward"
+  );
+
   // Activation ops
   ops.def(
     "silu_and_mul",

@@ -264,6 +264,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         # value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
         # return key_cache, value_cache
         x = 16 // kv_cache.element_size()
+        # x = 1
         num_blocks = kv_cache.shape[1]
 
         key_cache = kv_cache[0]
@@ -275,6 +276,180 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
 
 
     def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        kv_cache: Optional[torch.Tensor],
+        attn_metadata: IpexAttnMetadata,
+        k_scale: float = 1.0,
+        v_scale: float = 1.0,
+        attn_type: AttentionType = AttentionType.DECODER,
+    ) -> torch.Tensor:
+        """Forward pass with xFormers and PagedAttention.
+
+        Args:
+            query: shape = [num_tokens, num_heads * head_size]
+            key: shape = [num_tokens, num_kv_heads * head_size]
+            value: shape = [num_tokens, num_kv_heads * head_size]
+            kv_cache = [2, num_blocks, block_size * num_kv_heads * head_size]
+            attn_metadata: Metadata for attention.
+        Returns:
+            shape = [num_tokens, num_heads * head_size]
+        """
+        assert k_scale == 1.0 and v_scale == 1.0
+        if attn_type != AttentionType.DECODER:
+            raise NotImplementedError("Encoder self-attention and "
+                                      "encoder/decoder cross-attention "
+                                      "are not implemented for "
+                                      "IpexAttnBackendImpl")
+        query = query.view(-1, self.num_heads, self.head_size).contiguous()
+        key = key.view(-1, self.num_kv_heads, self.head_size).contiguous()
+        value = value.view(-1, self.num_kv_heads, self.head_size).contiguous()
+
+        key_cache = torch.empty_like(query, )
+        value_cache = torch.empty_like(query)
+        if kv_cache is not None:
+            key_cache, value_cache = self.split_kv_cache(
+                kv_cache, self.num_kv_heads, self.head_size)
+            ipex_ops.reshape_and_cache(
+                key,
+                value,
+                key_cache,
+                value_cache,
+                attn_metadata.slot_mapping.flatten(),
+                self.kv_cache_dtype,
+                k_scale,
+                v_scale,
+            )
+
+        num_prefill_tokens = attn_metadata.num_prefill_tokens
+        num_decode_tokens = attn_metadata.num_decode_tokens
+        assert query.shape[0] == num_prefill_tokens + num_decode_tokens
+        assert key.shape[0] == num_prefill_tokens + num_decode_tokens
+        assert value.shape[0] == num_prefill_tokens + num_decode_tokens
+
+        output = torch.empty_like(query)
+        # Query for decode. KV is not needed because it is already cached.
+        decode_query = query[num_prefill_tokens:]
+        # QKV for prefill.
+        query = query[:num_prefill_tokens]
+        key = key[:num_prefill_tokens]
+        value = value[:num_prefill_tokens]
+
+        assert query.shape[0] == num_prefill_tokens
+        assert decode_query.shape[0] == num_decode_tokens
+
+        # TODO: Check attn_bias
+        if prefill_meta := attn_metadata.prefill_metadata:
+            # Prompt run.
+            assert prefill_meta.seq_lens is not None
+            # kv_cache is not None
+            # if kv_cache is None or prefill_meta.block_tables is None or prefill_meta.block_tables.numel() == 0:
+            if True:
+                # When kv_cache is None, it indicates that this is the first prompt run
+                # However when second time doing chunked prefill, kv_cache may not be None, and we will
+                # need forward_prefix function...
+                # Do we really need to do this?
+                print("None prefix prompt forward")
+                if self.num_kv_heads != self.num_heads:
+                    key = key.repeat_interleave(self.num_queries_per_kv, dim=1)
+                    value = value.repeat_interleave(self.num_queries_per_kv,
+                                                    dim=1)
+
+                assert self.sliding_window is None
+                import vllm._C.ops
+                # seq_lens is not a tensor
+                print(prefill_meta.query_start_loc)
+                out = vllm._C.ops.context_attention_forward(query, key, value, prefill_meta.block_tables, prefill_meta.query_start_loc, prefill_meta.seq_lens, prefill_meta.context_lens_tensor, prefill_meta.max_seqlen)
+                output[:num_prefill_tokens] = out
+            else:
+                # prefix-enabled attention
+                # TODO(Hai) this triton kernel has regression issue (broke) to
+                # deal with different data types between KV and FP8 KV cache,
+                # to be addressed separately.
+                # assert False, "Not supported forward_prefix"
+                import vllm._C.ops
+                print("prefix enabled forward")
+                out = vllm._C.ops.context_attention_forward(query, key_cache, value_cache, prefill_meta.block_tables, prefill_meta.query_start_loc, prefill_meta.seq_lens, prefill_meta.context_lens_tensor, prefill_meta.max_seqlen)
+                assert output[:num_prefill_tokens].shape == out.shape
+                output[:num_prefill_tokens] = out
+
+        if decode_meta := attn_metadata.decode_metadata:
+            # Decoding run.
+            max_seq_len = decode_meta.max_decode_seq_len
+            out = torch.empty_like(decode_query)
+            block_size = value_cache.shape[3]
+            print(f"In decoding, the shape is:{decode_query.shape}")
+            num_seqs, num_heads, head_size = decode_query.shape
+            max_num_partitions = ((max_seq_len + _PARTITION_SIZE - 1) //
+                                  _PARTITION_SIZE)
+            # NOTE(woosuk): We use a simple heuristic to decide whether to use
+            # PagedAttention V1 or V2. If the number of partitions is 1, we use
+            # V1 to avoid the overhead of reduction. Also, if the number of
+            # sequences or heads is large, we use V1 since there is enough work
+            # to parallelize.
+            # TODO(woosuk): Tune this heuristic.
+            # For context len > 8192, use V2 kernel to avoid shared memory
+            # shortage.
+            use_v1 = (max_seq_len <= 8192 and
+                      (max_num_partitions == 1 or num_seqs * num_heads > 512))
+            if use_v1:
+                # Run PagedAttention V1.
+                ipex_ops.paged_attention_v1(
+                    out,
+                    decode_query,
+                    key_cache,
+                    value_cache,
+                    self.num_kv_heads,
+                    self.scale,
+                    decode_meta.block_tables,
+                    decode_meta.seq_lens_tensor,
+                    block_size,
+                    max_seq_len,
+                    self.alibi_slopes,
+                    self.kv_cache_dtype,
+                    k_scale,
+                    v_scale,
+                )
+            else:
+                # Run PagedAttention V2.
+                assert _PARTITION_SIZE % block_size == 0
+                tmp_output = torch.empty(
+                    size=(num_seqs, num_heads, max_num_partitions, head_size),
+                    dtype=output.dtype,
+                    device=output.device,
+                )
+                exp_sums = torch.empty(
+                    size=(num_seqs, num_heads, max_num_partitions),
+                    dtype=torch.float32,
+                    device=output.device,
+                )
+                max_logits = torch.empty_like(exp_sums)
+                ipex_ops.paged_attention_v2(
+                    out,
+                    exp_sums,
+                    max_logits,
+                    tmp_output,
+                    query,
+                    key_cache,
+                    value_cache,
+                    self.num_kv_heads,
+                    self.scale,
+                    decode_meta.block_tables,
+                    decode_meta.seq_lens_tensor,
+                    block_size,
+                    max_seq_len,
+                    self.alibi_slopes,
+                    self.kv_cache_dtype,
+                    k_scale,
+                    v_scale,
+                )
+            output[num_prefill_tokens:] = out
+        # Reshape the output tensor.
+        return output.view(-1, self.num_heads * self.head_size)
+
+    def forward_back_useful2(
         self,
         query: torch.Tensor,
         key: torch.Tensor,
@@ -355,7 +530,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
 
                 assert self.sliding_window is None
 
-                if attn_metadata.attn_bias is None:
+                if prefill_meta.attn_bias is None:
                     # TODO: fix this
                     if self.alibi_slopes is not None:
                         att_masks = _make_alibi_bias(
@@ -366,12 +541,12 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                             prefill_meta.seq_lens, self.sliding_window,
                             query.dtype)  # type: ignore
                     else:
-                        attn_masks = [None] * len(prefill_meta.seq_lens)
+                        att_masks = [None] * len(prefill_meta.seq_lens)
                         # att_masks = _make_sliding_window_bias(
                             # prefill_meta.seq_lens, None, dtype=query.dtype)
                         # att_masks = _make_sliding_window_bias(
                         #     prefill_meta.seq_lens, None, dtype=query.dtype)
-                    attn_metadata.attn_bias = att_masks
+                    prefill_meta.attn_bias = att_masks
 
                 # out = torch.empty(
                 #     (num_prefill_tokens, self.num_heads, self.head_size),
@@ -399,28 +574,44 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                 value = value.movedim(1, value.dim() - 2)
 
                 # New code begin
-
+                out = torch.empty((prefill_meta.num_prefill_tokens, self.num_heads, self.head_size),
+                                  dtype=query.dtype)
+                start = 0
+                for prompt_len, mask in zip(prefill_meta.seq_lens, prefill_meta.attn_bias):
+                    end = start + prompt_len
+                    sub_out = torch.nn.functional.scaled_dot_product_attention(
+                        query[:, :, start:end, :],
+                        key[:, :, start:end, :],
+                        value[:, :, start:end, :],
+                        attn_mask=mask,
+                        dropout_p=0.0,
+                        is_causal=False,
+                        scale=self.scale
+                    ).movedim(query.dim() - 2, 1).squeeze(dim=0).contiguous()
+                    out[start:end, :, :] = sub_out
+                    start = end
+                output[:num_prefill_tokens] = out
                 # New code ends
 
-                mask = _make_attention_mask(attn_metadata.attn_bias,
-                                            prefill_meta.seq_lens,
-                                            sum(prefill_meta.seq_lens),
-                                            query.dtype).to(query.device)
-                out = torch.nn.functional.scaled_dot_product_attention(
-                    query,
-                    key,
-                    value,
-                    # attn_mask=mask,
-                    attn_mask=None,
-                    dropout_p=0.0,
-                    is_causal=False,
-                    scale=self.scale).movedim(query.dim() - 2, 1).squeeze(dim=0).contiguous()
-                # output = torch.empty_like(query)
-                # output is in shape of []
-                print(f"In prefill, the output's shape is:{output[:num_prefill_tokens].shape}")
-                print(f"In prefill, the calculated out shape is:{output[:num_prefill_tokens].shape}")
-                assert output[:num_prefill_tokens].shape == out.shape
-                output[:num_prefill_tokens] = out
+                # mask = _make_attention_mask(attn_metadata.attn_bias,
+                #                             prefill_meta.seq_lens,
+                #                             sum(prefill_meta.seq_lens),
+                #                             query.dtype).to(query.device)
+                # out = torch.nn.functional.scaled_dot_product_attention(
+                #     query,
+                #     key,
+                #     value,
+                #     # attn_mask=mask,
+                #     attn_mask=None,
+                #     dropout_p=0.0,
+                #     is_causal=False,
+                #     scale=self.scale).movedim(query.dim() - 2, 1).squeeze(dim=0).contiguous()
+                # # output = torch.empty_like(query)
+                # # output is in shape of []
+                # print(f"In prefill, the output's shape is:{output[:num_prefill_tokens].shape}")
+                # print(f"In prefill, the calculated out shape is:{output[:num_prefill_tokens].shape}")
+                # assert output[:num_prefill_tokens].shape == out.shape
+                # output[:num_prefill_tokens] = out
             else:
                 # prefix-enabled attention
                 # TODO(Hai) this triton kernel has regression issue (broke) to

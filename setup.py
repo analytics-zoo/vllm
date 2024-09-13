@@ -131,7 +131,7 @@ class cmake_build_ext(build_ext):
                 nvcc_threads = 1
             num_jobs = max(1, num_jobs // nvcc_threads)
 
-        return num_jobs, nvcc_threads
+        return 24, nvcc_threads
 
     #
     # Perform cmake configuration for a single extension.

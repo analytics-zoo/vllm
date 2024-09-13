@@ -40,10 +40,18 @@ void paged_attention_v2(
     int max_context_len, const c10::optional<torch::Tensor> &alibi_slopes,
     const std::string& kv_cache_dtype, const float kv_scale);
 
+torch::Tensor context_attention_forward(
+    torch::Tensor query,  // [num_tokens, num_kv_head, head_dim]
+    torch::Tensor key,    // [num_tokens, num_kv_heads * head_size]
+    torch::Tensor value,  // [num_tokens, num_kv_heads * head_size]
+    torch::Tensor block_tables,
+    torch::Tensor query_start_loc, torch::Tensor seq_lens,
+    torch::Tensor context_lens, int max_input_length);
+
 void copy_blocks(
-    std::vector<torch::Tensor> &key_caches,
-    std::vector<torch::Tensor> &value_caches,
-    const std::map<int64_t, std::vector<int64_t>> &block_mapping);
+    std::vector<torch::Tensor>& key_caches,
+    std::vector<torch::Tensor>& value_caches,
+    const std::map<int64_t, std::vector<int64_t>>& block_mapping);
 
 void reshape_and_cache(torch::Tensor &key, torch::Tensor &value,
                            torch::Tensor &key_cache, torch::Tensor &value_cache,
