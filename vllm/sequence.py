@@ -695,6 +695,8 @@ class SequenceGroup:
 
         self.cached_request_output = None
 
+        self.cached_request_output = None
+
     @property
     def prompt(self) -> Optional[str]:
         # All sequences in the group should have the same prompt.
