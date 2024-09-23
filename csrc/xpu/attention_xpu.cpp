@@ -380,8 +380,10 @@ void context_attention_kernel(
 
                 // Position in the sequence
                 // context + seq_idx
+                // const int32_t token_position =
+                //     context_len + std::min(seq_idx, seq_bound - 1);
                 const int32_t token_position =
-                    context_len + std::min(seq_idx, seq_bound - 1);
+                    context_len + seq_idx;
 
                 // static const CONSTANT char FMT[] =
                 //     "Invoke target function...\n ";
@@ -620,8 +622,12 @@ void context_attention_kernel(
 
                 barrier();
 
-                if (tid < context_offset) {
-                   for (size_t r = 0; r < tid; ++ r){
+                // FIXME: For all the tokens, we will need to calculate the qks
+                // For tokens that are valid...
+                // if (tid < context_offset) {
+                if (token_position < seq_bound) {
+                    // This could be an error place
+                    for (size_t r = 0; r < context_offset; ++ r){
                         simd<scalar_t, HD> key_row =
                             slm_block_load<scalar_t, HD>(
                                 key_slm_offset + r * HD * sizeof(scalar_t));
@@ -727,7 +733,7 @@ void context_attention_kernel(
                 //         block_store(out_head, result);
                 //     }
                 // }
-                if (seq_idx < seq_bound) {
+                if (token_position < seq_bound) {
                     const int64_t which_block =
                         static_cast<int64_t>(token_position / block_size);
                     const int64_t which_slot =
@@ -774,7 +780,7 @@ void context_attention_kernel(
                 }
                 barrier();
 
-                if (seq_idx < seq_bound) {
+                if (token_position < seq_bound) {
                     // handle last a few of tokens
                     for (size_t r = 0; r <= tid; ++r) {
                         simd<scalar_t, HD> key_row =
