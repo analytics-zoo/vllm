@@ -314,6 +314,434 @@ void context_attention_kernel_kv(
 
 // How about implement a first edition that can be used with non-chunked prefill
 // requests, so that we can make sure the reference for heads is correct
+template <typename T, int GS, int HD>
+void context_attention_kernel_two(
+    void* query, void* key, void* value, const void* block_tables,
+    const float scale, const void* query_start_loc, const void* seq_lens,
+    const void* context_lens, const int block_size,
+    const int x,  // x in kv_cache
+    void* out,    // output
+    const int block_table_stride_batch, const int block_table_stride_seq,
+    const int query_stride_bs, const int query_stride_head,
+    const int query_stride_dim, const int k_cache_stride_tokens,
+    const int k_cache_stride_head, const int k_cache_stride_dim,
+    const int k_cache_stride_block_size, const int k_cache_stride_x,
+    const int v_cache_stride_tokens, const int v_cache_stride_head,
+    const int v_cache_stride_dim, const int v_cache_stride_block_size,
+    const int out_stride_tokens, const int out_stride_head,
+    const int num_queries_per_kv, const int max_input_length,
+    const int batch_size, const int num_heads, const int num_tokens,
+    const int max_context_len) {
+    constexpr int BLOCK_SIZE = 16;
+    constexpr int NUM_THREADS = 128;
+    // Each wrap handles one context block, therefore, each thread_group_size is
+    // this.
+    constexpr int THREAD_GROUP_SIZE = MAX(WARP_SIZE / BLOCK_SIZE, 1);
+    // Each query, and key thread_group loads 16 bytes
+    // Assume TGS=4 then 16 / 4 / sizeof(half) = 2
+    constexpr int VEC_SIZE = MAX(16 / (THREAD_GROUP_SIZE * sizeof(T)), 1);
+    using sycl_t = vllm::xpu::SyclTypeTrait<T>::Type;
+    using Q_Vec = typename Vec<sycl_t, VEC_SIZE>::Type;
+
+    // Assuming HD = 128, TGS = 2, then 128 / 2 / 2 = 32
+    int num_vecs_per_thread = HD / THREAD_GROUP_SIZE / VEC_SIZE;
+    sycl_t* out_p = reinterpret_cast<sycl_t*>(out);
+    sycl_t* query_ptr = reinterpret_cast<sycl_t*>(query);
+    sycl_t* key_cache_ptr = reinterpret_cast<sycl_t*>(key);
+    sycl_t* value_cache_ptr = reinterpret_cast<sycl_t*>(value);
+    const int* query_loc_ptr = reinterpret_cast<const int*>(query_start_loc);
+    const int* block_tables_ptr = reinterpret_cast<const int*>(block_tables);
+    const int* context_lens_ptr = reinterpret_cast<const int*>(context_lens);
+    const int* seq_lens_ptr = reinterpret_cast<const int*>(seq_lens);
+
+    constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
+    int padded_max_context_len =
+        DIVIDE_ROUND_UP(max_context_len, BLOCK_SIZE) * BLOCK_SIZE;
+    int logits_size = padded_max_context_len * sizeof(float);
+    int outputs_size = (NUM_WARPS / 2) * HD * sizeof(float);
+    // Python-side check in
+    // vllm.worker.worker._check_if_can_support_max_seq_len Keep that in
+    // sync with the logic here!
+    int shared_mem_size = std::max(logits_size, outputs_size);
+    // WARN: we have changed this...
+    sycl::range<3> grid(batch_size, num_heads, max_input_length);
+    // One work-group that is executing on the device
+    sycl::range<3> block(1, 1, NUM_THREADS);
+    sycl::queue& queue = vllm::xpu::vllmGetQueue();
+
+    auto cgf = [&](sycl::handler& handle) {
+        sycl::stream output_stream(128000, 128, handle);
+        sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
+            sycl::range<1>(shared_mem_size), handle);
+        sycl::local_accessor<Q_Vec, 1> q_vecs_acc_ct1(
+            sycl::range<1>(THREAD_GROUP_SIZE * num_vecs_per_thread), handle);
+        sycl::local_accessor<float, 1> red_smem_acc_ct1(
+            sycl::range<1>(2 * NUM_WARPS), handle);
+
+        handle.parallel_for(
+            // (batch_size, num_heads, max_input_length * 128) (1, 1, 128)
+            // Each workgroup handles one token
+            sycl::nd_range<3>(grid * block, block),
+            [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(32)]] {
+                // FIXME: change this...
+                // const int bsz_idx = item_ct1.get_global_id(0);
+                const int bsz_idx = item_ct1.get_group(0);
+                const int seq_idx = item_ct1.get_group(2);
+                constexpr bool USE_PARTITIONING = false;
+                const int context_len = context_lens_ptr[bsz_idx] + seq_idx;
+                const int seq_len = seq_lens_ptr[bsz_idx];
+                uint8_t* dpct_local = dpct_local_acc_ct1.get_pointer();
+                Q_Vec* q_vecs = q_vecs_acc_ct1.get_pointer();
+                float* red_smem = red_smem_acc_ct1.get_pointer();
+
+                // output_stream << "Original context_len: " << context_lens_ptr[bsz_idx] << sycl::endl;
+                output_stream << "Batch_idx: " << bsz_idx << " Seq_idx: " << seq_idx
+                    << " Context_len: " << context_len << " Original context_len: " << context_lens_ptr[bsz_idx] << " Seq_len: " << seq_len
+                    << " Max input length: " << max_input_length
+                    << sycl::endl;
+                // FIXME: chang this to >=
+                // Assuming seq_len is 5, then seq_idx should be 0, 1, 2, 3, 4, 5
+                // Shall the query token attend to itself?
+                if (context_len >= seq_len) {
+                    return;
+                }
+
+                const int num_context_blocks =
+                    DIVIDE_ROUND_UP(context_len, BLOCK_SIZE);
+                const int num_blocks_per_partition = num_context_blocks;
+
+                const int start_block_idx = 0;
+                // TODO: remove this
+                const int end_block_idx = MIN(
+                    start_block_idx + num_context_blocks, num_context_blocks);
+
+                const int num_blocks = end_block_idx - start_block_idx;
+                const int start_token_idx = start_block_idx * BLOCK_SIZE;
+                const int end_token_idx =
+                    MIN(start_token_idx + num_blocks * BLOCK_SIZE, context_len);
+                const int num_tokens = end_token_idx - start_token_idx;
+                // THREAD_GROUP_SIZE equals to 2
+                constexpr int THREAD_GROUP_SIZE =
+                    MAX(WARP_SIZE / BLOCK_SIZE, 1);
+                // 128 / 2 = 64 THREAD GROUPS -> 4 warps, 16 thread group per
+                // warp
+                constexpr int NUM_THREAD_GROUPS =
+                    NUM_THREADS /
+                    THREAD_GROUP_SIZE;  // Note: This assumes THREAD_GROUP_SIZE
+                constexpr int NUM_TOKENS_PER_THREAD_GROUP =
+                    DIVIDE_ROUND_UP(BLOCK_SIZE, WARP_SIZE);
+                constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
+                const int thread_idx = item_ct1.get_local_id(2);
+                const int warp_idx = thread_idx / WARP_SIZE;
+                const int lane = thread_idx % WARP_SIZE;
+                const int head_idx = item_ct1.get_group(1);
+                const int num_heads = item_ct1.get_group_range(1);
+                const int kv_head_idx = head_idx / num_queries_per_kv;
+                // TODO: consider alibi_slope later
+                constexpr int NUM_ELEMS_PER_THREAD = HD / THREAD_GROUP_SIZE;
+                constexpr int NUM_VECS_PER_THREAD =
+                    NUM_ELEMS_PER_THREAD / VEC_SIZE;
+                const int thread_group_idx = thread_idx / THREAD_GROUP_SIZE;
+                const int thread_group_offset = thread_idx % THREAD_GROUP_SIZE;
+                // num_tokens, num_heads, HD
+                // TODO: fix this
+                // const sycl_t* q_ptr =
+                //     query_ptr + seq_idx * query_stride_bs + head_idx * HD;
+                const sycl_t* q_ptr =
+                    query_ptr + (query_loc_ptr[bsz_idx] + seq_idx) * query_stride_bs + head_idx * HD;
+
+#pragma unroll
+                for (int i = thread_group_idx; i < NUM_VECS_PER_THREAD;
+                     i += NUM_THREAD_GROUPS) {
+                    const int vec_idx =
+                        thread_group_offset + i * THREAD_GROUP_SIZE;
+                    q_vecs[thread_group_offset * NUM_VECS_PER_THREAD + i] =
+                        *reinterpret_cast<const Q_Vec*>(q_ptr +
+                                                        vec_idx * VEC_SIZE);
+                }
+                // Loaded q_vecs
+                item_ct1.barrier(sycl::access::fence_space::local_space);
+                auto shared_mem = (char*)dpct_local;
+                float* logits = reinterpret_cast<float*>(shared_mem);
+                constexpr int x = 16 / sizeof(sycl_t);
+                float qk_max = -FLT_MAX;
+                // TODO: check if block_table include everything?
+                const int* block_table =
+                    block_tables_ptr + bsz_idx * block_table_stride_batch;
+
+                // Loading key
+                for (int block_idx = start_block_idx + warp_idx;
+                     block_idx < end_block_idx; block_idx += NUM_WARPS) {
+                    const int64_t physical_block_number =
+                        static_cast<int64_t>(block_table[block_idx]);
+                    for (int i = 0; i < NUM_TOKENS_PER_THREAD_GROUP; i++) {
+                        const int physical_block_offset =
+                            (thread_group_idx + i * WARP_SIZE) % BLOCK_SIZE;
+                        const int token_idx =
+                            block_idx * BLOCK_SIZE + physical_block_offset;
+
+                        Q_Vec k_vecs[NUM_VECS_PER_THREAD];
+
+#pragma unroll
+                        for (int j = 0; j < NUM_VECS_PER_THREAD; j++) {
+                            const sycl_t* k_ptr =
+                                key_cache_ptr +
+                                physical_block_number *
+                                    k_cache_stride_tokens +
+                                kv_head_idx * k_cache_stride_head +
+                                physical_block_offset * x;
+
+                            const int vec_idx =
+                                thread_group_offset + j * THREAD_GROUP_SIZE;
+                            const int offset1 = (vec_idx * VEC_SIZE) / x;
+                            const int offset2 = (vec_idx * VEC_SIZE) % x;
+                            k_vecs[j] = *reinterpret_cast<const Q_Vec*>(
+                                k_ptr + offset1 * BLOCK_SIZE * x + offset2);
+                        }
+
+                        // Compute dot product.
+                        // This includes a reduction across the threads in the
+                        // same thread group. Q_Vec_t
+                        // q_vec_[NUM_VECS_PER_THREAD] = q_vecs +
+                        // thread_group_offset * THREAD_GROUP_SIZE;
+                        float qk =
+                            scale *
+                            Qk_dot<sycl_t, THREAD_GROUP_SIZE>::template dot<
+                                Q_Vec, NUM_VECS_PER_THREAD>(
+                                q_vecs +
+                                    thread_group_offset * NUM_VECS_PER_THREAD,
+                                k_vecs, item_ct1);
+
+                        if (thread_group_offset == 0) {
+                            // Store the partial reductions to shared memory.
+                            // NOTE(woosuk): It is required to zero out the
+                            // masked logits.
+                            const bool mask = token_idx >= context_len;
+                            // TODO: uncomment
+                            logits[token_idx - start_token_idx] =
+                                mask ? 0.f : qk;
+                            // Update the max value.
+                            qk_max = mask ? qk_max : sycl::fmax(qk_max, qk);
+                        }
+                    }
+                }
+#pragma unroll
+                for (int mask = WARP_SIZE / 2; mask >= THREAD_GROUP_SIZE;
+                     mask /= 2) {
+                    /*
+                    DPCT1096:38: The right-most dimension of the work-group used
+                    in the SYCL kernel that calls this function may be less than
+                    "32". The function "dpct::permute_sub_group_by_xor" may
+                    return an unexpected result on the CPU device. Modify the
+                    size of the work-group to ensure that the value of the
+                    right-most dimension is a multiple of "32".
+                    */
+                    qk_max = sycl::fmax(
+                        qk_max, dpct::permute_sub_group_by_xor(
+                                    item_ct1.get_sub_group(), qk_max, mask));
+                }
+                if (lane == 0) {
+                    red_smem[warp_idx] = qk_max;
+                }
+                item_ct1.barrier(sycl::access::fence_space::local_space);
+                // TODO(woosuk): Refactor this part.
+                // Get the max qk value for the sequence.
+                qk_max = lane < NUM_WARPS ? red_smem[lane] : -FLT_MAX;
+#pragma unroll
+                for (int mask = NUM_WARPS / 2; mask >= 1; mask /= 2) {
+                    /*
+                    DPCT1096:39: The right-most dimension of the work-group used
+                    in the SYCL kernel that calls this function may be less than
+                    "32". The function "dpct::permute_sub_group_by_xor" may
+                    return an unexpected result on the CPU device. Modify the
+                    size of the work-group to ensure that the value of the
+                    right-most dimension is a multiple of "32".
+                    */
+                    qk_max = sycl::fmax(
+                        qk_max, dpct::permute_sub_group_by_xor(
+                                    item_ct1.get_sub_group(), qk_max, mask));
+                }
+                qk_max = dpct::select_from_sub_group(item_ct1.get_sub_group(),
+                                                     qk_max, 0);
+
+                // Get the sum of the exp values.
+                float exp_sum = 0.f;
+                for (int i = thread_idx; i < num_tokens; i += NUM_THREADS) {
+                    float val = sycl::exp(logits[i] - qk_max);
+                    logits[i] = val;
+                    exp_sum += val;
+                }
+                exp_sum = block_sum<NUM_WARPS>(&red_smem[NUM_WARPS], exp_sum,
+                                               item_ct1);
+                // Compute softmax.
+                const float inv_sum = 1.f / (exp_sum + 1e-6f);
+                for (int i = thread_idx; i < num_tokens; i += NUM_THREADS) {
+                    logits[i] *= inv_sum;
+                }
+
+                item_ct1.barrier(sycl::access::fence_space::local_space);
+                constexpr int V_VEC_SIZE = MIN(16 / sizeof(sycl_t), BLOCK_SIZE);
+                using V_vec = typename Vec<sycl_t, V_VEC_SIZE>::Type;
+                using L_vec = typename Vec<sycl_t, V_VEC_SIZE>::Type;
+                using Float_L_vec = typename FloatVec<L_vec>::Type;
+                constexpr int NUM_V_VECS_PER_ROW = BLOCK_SIZE / V_VEC_SIZE;
+                constexpr int NUM_ROWS_PER_ITER =
+                    WARP_SIZE / NUM_V_VECS_PER_ROW;
+                constexpr int NUM_ROWS_PER_THREAD =
+                    DIVIDE_ROUND_UP(HD, NUM_ROWS_PER_ITER);
+                // NOTE(woosuk): We use FP32 for the accumulator for better
+                // accuracy.
+                float accs[NUM_ROWS_PER_THREAD];
+#pragma unroll
+                for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
+                    accs[i] = 0.f;
+                }
+
+                sycl_t zero_value;
+                zero(zero_value);
+                for (int block_idx = start_block_idx + warp_idx;
+                     block_idx < end_block_idx; block_idx += NUM_WARPS) {
+                    // NOTE(woosuk): The block number is stored in int32.
+                    // However, we cast it to int64 because int32 can lead to
+                    // overflow when this variable is multiplied by large
+                    // numbers (e.g., kv_block_stride).
+                    const int64_t physical_block_number =
+                        static_cast<int64_t>(block_table[block_idx]);
+                    const int physical_block_offset =
+                        (lane % NUM_V_VECS_PER_ROW) * V_VEC_SIZE;
+                    const int token_idx =
+                        block_idx * BLOCK_SIZE + physical_block_offset;
+                    L_vec logits_vec;
+                    vllm::from_float(logits_vec,
+                                     *reinterpret_cast<Float_L_vec*>(
+                                         logits + token_idx - start_token_idx));
+
+                    const sycl_t* v_ptr =
+                        value_cache_ptr + physical_block_number * v_cache_stride_tokens +
+                        kv_head_idx * v_cache_stride_head;
+#pragma unroll
+                    for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
+                        const int row_idx =
+                            lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
+                        if (row_idx < HD) {
+                            const int offset =
+                                row_idx * BLOCK_SIZE + physical_block_offset;
+                            V_vec v_vec =
+                                *reinterpret_cast<const V_vec*>(v_ptr + offset);
+                            if (block_idx == num_context_blocks - 1) {
+                                // NOTE(woosuk): When v_vec contains the tokens
+                                // that are out of the context, we should
+                                // explicitly zero out the values since they may
+                                // contain NaNs. See
+                                // https://github.com/vllm-project/vllm/issues/641#issuecomment-1682544472
+                                sycl_t* v_vec_ptr =
+                                    reinterpret_cast<sycl_t*>(&v_vec);
+#pragma unroll
+                                for (int j = 0; j < V_VEC_SIZE; j++) {
+                                    v_vec_ptr[j] = token_idx + j < context_len
+                                                       ? v_vec_ptr[j]
+                                                       : zero_value;
+                                }
+                            }
+                            accs[i] += vllm::dot(logits_vec, v_vec);
+                        }
+                    }
+                }
+            // Perform reduction within each warp.
+#pragma unroll
+                for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
+                    float acc = accs[i];
+#pragma unroll
+                    for (int mask = NUM_V_VECS_PER_ROW / 2; mask >= 1;
+                         mask /= 2) {
+                        /*
+                        DPCT1096:41: The right-most dimension of the work-group
+                        used in the SYCL kernel that calls this function may be
+                        less than "32". The function
+                        "dpct::permute_sub_group_by_xor" may return an
+                        unexpected result on the CPU device. Modify the size of
+                        the work-group to ensure that the value of the
+                        right-most dimension is a multiple of "32".
+                        */
+                        acc += dpct::permute_sub_group_by_xor(
+                            item_ct1.get_sub_group(), acc, mask);
+                    }
+                    accs[i] = acc;
+                }
+
+                // NOTE(woosuk): A barrier is required because the shared memory
+                // space for logits is reused for the output.
+
+                item_ct1.barrier(sycl::access::fence_space::local_space);
+
+                // Perform reduction across warps.
+                float* out_smem = reinterpret_cast<float*>(shared_mem);
+#pragma unroll
+                for (int i = NUM_WARPS; i > 1; i /= 2) {
+                    int mid = i / 2;
+                    // Upper warps write to shared memory.
+                    if (warp_idx >= mid && warp_idx < i) {
+                        float* dst = &out_smem[(warp_idx - mid) * HD];
+#pragma unroll
+                        for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
+                            const int row_idx = lane / NUM_V_VECS_PER_ROW +
+                                                i * NUM_ROWS_PER_ITER;
+                            if (row_idx < HD &&
+                                lane % NUM_V_VECS_PER_ROW == 0) {
+                                dst[row_idx] = accs[i];
+                            }
+                        }
+                    }
+
+                    item_ct1.barrier(sycl::access::fence_space::local_space);
+
+                    // Lower warps update the output.
+                    if (warp_idx < mid) {
+                        const float* src = &out_smem[warp_idx * HD];
+#pragma unroll
+                        for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
+                            const int row_idx = lane / NUM_V_VECS_PER_ROW +
+                                                i * NUM_ROWS_PER_ITER;
+                            if (row_idx < HD &&
+                                lane % NUM_V_VECS_PER_ROW == 0) {
+                                accs[i] += src[row_idx];
+                            }
+                        }
+                    }
+
+                    item_ct1.barrier(sycl::access::fence_space::local_space);
+                }
+
+                // Write the final output.
+                if (warp_idx == 0) {
+                    sycl_t* out_ptr =
+                        out_p + (query_loc_ptr[bsz_idx] + seq_idx) * out_stride_tokens + head_idx * out_stride_head;
+
+                    // sycl_t* out_ptr =
+                    //     out_p +
+                    //     seq_idx * num_heads * max_num_partitions * HEAD_SIZE +
+                    //     head_idx * max_num_partitions * HEAD_SIZE +
+                    //     partition_idx * HEAD_SIZE;
+#pragma unroll
+                    for (int i = 0; i < NUM_ROWS_PER_THREAD; i++) {
+                        const int row_idx =
+                            lane / NUM_V_VECS_PER_ROW + i * NUM_ROWS_PER_ITER;
+                        if (row_idx < HD &&
+                            lane % NUM_V_VECS_PER_ROW == 0) {
+                            vllm::from_float(*(out_ptr + row_idx), accs[i]);
+                        }
+                    }
+                }
+            });
+        // Each thread_group handles one token
+    };
+    queue.submit(cgf);
+    queue.wait();
+}
+
+// How about implement a first edition that can be used with non-chunked
+// prefill requests, so that we can make sure the reference for heads is
+// correct
 template <typename scalar_t, int GS, int HD>
 void context_attention_kernel(
     void* query, void* key, void* value, const void* block_tables,
@@ -363,9 +791,9 @@ void context_attention_kernel(
                 int32_t seq_bound = seq_len[bsz_idx];
 
                 const int32_t* query_loc = (const int32_t*)query_start_loc;
-                // There is a possibility that the current token index pass over
-                // the seq_len, therefore:
-                // token_idx is the position in the query
+                // There is a possibility that the current token index pass
+                // over the seq_len, therefore: token_idx is the position in
+                // the query
                 int32_t token_idx =
                     query_loc[bsz_idx] + std::min(seq_idx, seq_bound - 1);
 
@@ -382,16 +810,15 @@ void context_attention_kernel(
                 // context + seq_idx
                 // const int32_t token_position =
                 //     context_len + std::min(seq_idx, seq_bound - 1);
-                const int32_t token_position =
-                    context_len + seq_idx;
+                const int32_t token_position = context_len + seq_idx;
 
                 // static const CONSTANT char FMT[] =
                 //     "Invoke target function...\n ";
 
                 // sycl::ext::oneapi::experimental::printf(FMT);
                 // static const CONSTANT char FMT[] =
-                //     "GroupID = %6d bsz_idx = %6d seq_len = %6d seq_idx = %6d"
-                //     "local_id = "
+                //     "GroupID = %6d bsz_idx = %6d seq_len = %6d seq_idx =
+                //     %6d" "local_id = "
                 //     "%6d "
                 //     "token_idx = %6d "
                 //     "context_len = %6d "
@@ -411,8 +838,8 @@ void context_attention_kernel(
                     (query_loc[bsz_idx] + seq_idx) * out_stride_tokens +
                     head_idx * out_stride_head;
                 // The indexing for key_head will be wired...
-                // Assuming context length is in n * GS + offset_part, now we
-                // are handling the n * GS part
+                // Assuming context length is in n * GS + offset_part, now
+                // we are handling the n * GS part
                 int32_t context_groups = context_len / GS;
                 // TODO: consider context groups later
                 // TODO: consider n*GS part later
@@ -424,16 +851,19 @@ void context_attention_kernel(
                 simd<scalar_t, GS> softmaxv = 0;
                 scalar_t max_attn = -sycl::detail::max_v<scalar_t>();
 
-                // ############################ Handle n * GS context part ######################
+                // ############################ Handle n * GS context part
+                // ######################
                 int32_t n = context_len / GS;
                 int32_t context_offset = context_len % GS;
 
                 // static const CONSTANT char FMT[] =
-                //     "GroupID = %2d seq_len = %d seq_idx = %d token_idx = %d token_position = %d "
-                //     "context_len = %d n = %d context_offset = %d\n";
+                //     "GroupID = %2d seq_len = %d seq_idx = %d token_idx =
+                //     %d token_position = %d " "context_len = %d n = %d
+                //     context_offset = %d\n";
                 // sycl::ext::oneapi::experimental::printf(
                 //     FMT, gid, seq_bound, seq_idx,
-                //     token_idx, token_position, context_len, n, context_offset);
+                //     token_idx, token_position, context_len, n,
+                //     context_offset);
 
                 // TODO: this target_key_position has problems
                 for (int32_t group = 0; group < n; ++group) {
@@ -502,9 +932,8 @@ void context_attention_kernel(
                     barrier();
                 }
 
-                // ########################### End for handling context n * GS part ###########
-
-
+                // ########################### End for handling context n *
+                // GS part ###########
 
                 // ############################# Handle n * GS
                 // ############################
@@ -574,9 +1003,8 @@ void context_attention_kernel(
                     barrier();
                 }
 
-                // ############## End of handle n * GS part ##################
-
-
+                // ############## End of handle n * GS part
+                // ##################
 
                 // ################ Handle offset part ####################
                 scalar_t softmax =
@@ -622,12 +1050,12 @@ void context_attention_kernel(
 
                 barrier();
 
-                // FIXME: For all the tokens, we will need to calculate the qks
-                // For tokens that are valid...
-                // if (tid < context_offset) {
+                // FIXME: For all the tokens, we will need to calculate the
+                // qks For tokens that are valid... if (tid <
+                // context_offset) {
                 if (token_position < seq_bound) {
                     // This could be an error place
-                    for (size_t r = 0; r < context_offset; ++ r){
+                    for (size_t r = 0; r < context_offset; ++r) {
                         simd<scalar_t, HD> key_row =
                             slm_block_load<scalar_t, HD>(
                                 key_slm_offset + r * HD * sizeof(scalar_t));
@@ -648,18 +1076,21 @@ void context_attention_kernel(
                             softmax = softmax * attn_exp + 1;
                             max_attn = attn;
                         }
-                   } 
+                    }
                 }
                 barrier();
                 // ############## handle seq offset #################
                 // TODO: check if this part has problem or not...
                 // if (seq_idx < seq_bound) {
                 //     const int64_t which_block =
-                //         static_cast<int64_t>(token_position / block_size);
+                //         static_cast<int64_t>(token_position /
+                //         block_size);
                 //     const int64_t which_slot =
-                //         static_cast<int64_t>(token_position % block_size);
+                //         static_cast<int64_t>(token_position %
+                //         block_size);
 
-                //     // TODO: we might need to cast this to int64_t to avoid
+                //     // TODO: we might need to cast this to int64_t to
+                //     avoid
                 //     // overflow...
                 //     const int64_t physical_block_number =
                 //         static_cast<int64_t>(block_table[which_block]);
@@ -674,7 +1105,8 @@ void context_attention_kernel(
                 //     // 0 to 7
                 //     for (int i = 0; i < HD / x; i++) {
                 //         // Load 8 elements
-                //         simd<scalar_t, 8> key_row = block_load<scalar_t, 8>(
+                //         simd<scalar_t, 8> key_row = block_load<scalar_t,
+                //         8>(
                 //             key_head + i * k_cache_stride_dim);
                 //         slm_block_store(key_slm_offset +
                 //                             tid * HD * sizeof(scalar_t) +
@@ -682,7 +1114,8 @@ void context_attention_kernel(
                 //                         key_row);
                 //     }
 
-                //     // v_cache in shape [num_blocks, num_kv_heads, head_size,
+                //     // v_cache in shape [num_blocks, num_kv_heads,
+                //     head_size,
                 //     // block_size]
                 //     const scalar_t* value_head =
                 //         (const scalar_t*)value +
@@ -693,7 +1126,8 @@ void context_attention_kernel(
                 //         scalar_t temp_value =
                 //             value_head[i * v_cache_stride_dim];
                 //         slm_scalar_store<scalar_t>(
-                //             value_slm_offset + tid * HD * sizeof(scalar_t) +
+                //             value_slm_offset + tid * HD *
+                //             sizeof(scalar_t) +
                 //                 i * sizeof(scalar_t),
                 //             temp_value);
                 //     }
@@ -705,20 +1139,25 @@ void context_attention_kernel(
                 //     for (size_t r = 0; r <= tid; ++r) {
                 //         simd<scalar_t, HD> key_row =
                 //             slm_block_load<scalar_t, HD>(
-                //                 key_slm_offset + r * HD * sizeof(scalar_t));
+                //                 key_slm_offset + r * HD *
+                //                 sizeof(scalar_t));
                 //         simd<scalar_t, HD> value_row =
                 //             slm_block_load<scalar_t, HD>(
-                //                 value_slm_offset + r * HD * sizeof(scalar_t));
-                //         scalar_t attn = sycl::ext::intel::esimd::detail::sum<
+                //                 value_slm_offset + r * HD *
+                //                 sizeof(scalar_t));
+                //         scalar_t attn =
+                //         sycl::ext::intel::esimd::detail::sum<
                 //             scalar_t, scalar_t, HD>(query_row * key_row);
                 //         if (attn <= max_attn) {
                 //             scalar_t attn_exp =
-                //                 sycl::ext::intel::esimd::exp(attn - max_attn);
+                //                 sycl::ext::intel::esimd::exp(attn -
+                //                 max_attn);
                 //             accv += value_row * attn_exp;
                 //             softmax += attn_exp;
                 //         } else {
                 //             scalar_t attn_exp =
-                //                 sycl::ext::intel::esimd::exp(max_attn - attn);
+                //                 sycl::ext::intel::esimd::exp(max_attn -
+                //                 attn);
                 //             accv = accv * attn_exp + value_row;
                 //             softmax = softmax * attn_exp + 1;
                 //             max_attn = attn;
@@ -762,8 +1201,8 @@ void context_attention_kernel(
                                         key_row);
                     }
 
-                    // v_cache in shape [num_blocks, num_kv_heads, head_size,
-                    // block_size]
+                    // v_cache in shape [num_blocks, num_kv_heads,
+                    // head_size, block_size]
                     const scalar_t* value_head =
                         (const scalar_t*)value +
                         physical_block_number * v_cache_stride_tokens +
@@ -1816,7 +2255,7 @@ torch::Tensor context_attention_forward(
     torch::Tensor key,    // [num_tokens, num_kv_heads * head_size]
     torch::Tensor value,  // [num_tokens, num_kv_heads * head_size]
     torch::Tensor block_tables, torch::Tensor query_start_loc,
-    torch::Tensor seq_lens, torch::Tensor context_lens, int max_input_length) {
+    torch::Tensor seq_lens, torch::Tensor context_lens, int max_input_length, int max_context_length) {
     // TODO: Dispatch to different query.scalar_type() if needed.
     int64_t num_tokens = query.size(0);
     int64_t num_heads = query.size(1);
@@ -1878,7 +2317,7 @@ torch::Tensor context_attention_forward(
         int v_cache_stride_head = value.stride(1);
         int v_cache_stride_head_dim = value.stride(2);
         int v_cache_stride_block = value.stride(3);
-        vllm::context_attention_kernel<sycl::half, 32, 128>(
+        vllm::context_attention_kernel_two<sycl::half, 32, 128>(
             query.data_ptr(), key.data_ptr(), value.data_ptr(),
             block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
             seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
@@ -1888,7 +2327,19 @@ torch::Tensor context_attention_forward(
             k_cache_stride_block, k_cache_stride_x, v_cache_stride_token,
             v_cache_stride_head, v_cache_stride_head_dim, v_cache_stride_block,
             output.stride(0), output.stride(1), num_queries_per_kv,
-            max_input_length, batch_size, num_heads);
+            max_input_length, batch_size, num_heads, query.size(0), max_context_length);
+
+        // vllm::context_attention_kernel<sycl::half, 32, 128>(
+        //     query.data_ptr(), key.data_ptr(), value.data_ptr(),
+        //     block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
+        //     seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
+        //     output.data_ptr(), block_table_stride_bsz, block_table_stride_seq,
+        //     query_stride_token, query_stride_head, query_stride_dim,
+        //     k_cache_stride_token, k_cache_stride_head, k_cache_stride_head_dim,
+        //     k_cache_stride_block, k_cache_stride_x, v_cache_stride_token,
+        //     v_cache_stride_head, v_cache_stride_head_dim, v_cache_stride_block,
+        //     output.stride(0), output.stride(1), num_queries_per_kv,
+        //     max_input_length, batch_size, num_heads);
         return output;
     }
 }
