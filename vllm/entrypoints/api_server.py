@@ -131,6 +131,9 @@ async def run_server(args: Namespace,
 
 
 if __name__ == "__main__":
+    logger.warning("Warning: Please use `ipex_llm.vllm.xpu.entrypoints.openai.api_server` "
+                   "instead of `vllm.entrypoints.openai.api_server` to start the API server")
+
     parser = FlexibleArgumentParser()
     parser.add_argument("--host", type=str, default=None)
     parser.add_argument("--port", type=int, default=8000)
