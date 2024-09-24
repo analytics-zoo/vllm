@@ -370,7 +370,7 @@ void context_attention_kernel_two(
     sycl::queue& queue = vllm::xpu::vllmGetQueue();
 
     auto cgf = [&](sycl::handler& handle) {
-        sycl::stream output_stream(128000, 128, handle);
+        // sycl::stream output_stream(128000, 128, handle);
         sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
             sycl::range<1>(shared_mem_size), handle);
         sycl::local_accessor<Q_Vec, 1> q_vecs_acc_ct1(
@@ -395,10 +395,10 @@ void context_attention_kernel_two(
                 float* red_smem = red_smem_acc_ct1.get_pointer();
 
                 // output_stream << "Original context_len: " << context_lens_ptr[bsz_idx] << sycl::endl;
-                output_stream << "Batch_idx: " << bsz_idx << " Seq_idx: " << seq_idx
-                    << " Context_len: " << context_len << " Original context_len: " << context_lens_ptr[bsz_idx] << " Seq_len: " << seq_len
-                    << " Max input length: " << max_input_length
-                    << sycl::endl;
+                // output_stream << "Batch_idx: " << bsz_idx << " Seq_idx: " << seq_idx
+                //     << " Context_len: " << context_len << " Original context_len: " << context_lens_ptr[bsz_idx] << " Seq_len: " << seq_len
+                //     << " Max input length: " << max_input_length
+                //     << sycl::endl;
                 // FIXME: chang this to >=
                 // Assuming seq_len is 5, then seq_idx should be 0, 1, 2, 3, 4, 5
                 // Shall the query token attend to itself?
@@ -736,7 +736,6 @@ void context_attention_kernel_two(
         // Each thread_group handles one token
     };
     queue.submit(cgf);
-    queue.wait();
 }
 
 // How about implement a first edition that can be used with non-chunked
