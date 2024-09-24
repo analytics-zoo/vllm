@@ -307,8 +307,8 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         key = key.view(-1, self.num_kv_heads, self.head_size).contiguous()
         value = value.view(-1, self.num_kv_heads, self.head_size).contiguous()
 
-        key_cache = torch.empty_like(query, )
-        value_cache = torch.empty_like(query)
+        # key_cache = torch.empty_like(query, )
+        # value_cache = torch.empty_like(query)
         if kv_cache is not None:
             key_cache, value_cache = self.split_kv_cache(
                 kv_cache, self.num_kv_heads, self.head_size)
@@ -351,17 +351,17 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                 # However when second time doing chunked prefill, kv_cache may not be None, and we will
                 # need forward_prefix function...
                 # Do we really need to do this?
-                print("None prefix prompt forward")
                 if self.num_kv_heads != self.num_heads:
                     key = key.repeat_interleave(self.num_queries_per_kv, dim=1)
                     value = value.repeat_interleave(self.num_queries_per_kv,
                                                     dim=1)
-
                 assert self.sliding_window is None
                 import vllm._C.ops
                 # seq_lens is not a tensor
-                print(prefill_meta.query_start_loc)
-                out = vllm._C.ops.context_attention_forward(query, key, value, prefill_meta.block_tables, prefill_meta.query_start_loc, prefill_meta.seq_lens, prefill_meta.context_lens_tensor, prefill_meta.max_seqlen)
+                # print(prefill_meta.query_start_loc)
+                out = vllm._C.ops.context_attention_forward(query, key_cache, value_cache, prefill_meta.block_tables, prefill_meta.query_start_loc, prefill_meta.seq_lens, prefill_meta.context_lens_tensor, prefill_meta.max_seqlen, torch.amax(prefill_meta.context_lens_tensor).item())
+                # out = vllm._C.ops.context_attention_forward(query, key, value, prefill_meta.block_tables, prefill_meta.query_start_loc, prefill_meta.seq_lens, prefill_meta.context_lens_tensor, prefill_meta.max_seqlen)
+                # out = vllm._C.ops.context_attention_forward(query, key, value, prefill_meta.block_tables, prefill_meta.query_start_loc, prefill_meta.seq_lens, prefill_meta.context_lens_tensor, prefill_meta.max_seqlen)
                 output[:num_prefill_tokens] = out
             else:
                 # prefix-enabled attention
@@ -380,7 +380,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             max_seq_len = decode_meta.max_decode_seq_len
             out = torch.empty_like(decode_query)
             block_size = value_cache.shape[3]
-            print(f"In decoding, the shape is:{decode_query.shape}")
+            # print(f"In decoding, the shape is:{decode_query.shape}")
             num_seqs, num_heads, head_size = decode_query.shape
             max_num_partitions = ((max_seq_len + _PARTITION_SIZE - 1) //
                                   _PARTITION_SIZE)

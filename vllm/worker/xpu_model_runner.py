@@ -286,6 +286,8 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
                     and not (computed_block_nums is None or computed_block_nums == [])):
                     raise RuntimeError("chunked prefill cannot be used with prefix caching")
                 seq_data = seq_group_metadata.seq_data[seq_id]
+                # import pdb
+                # pdb.set_trace()
                 # Context_len: how many tokens that have been computed
                 if is_prompt:
                     context_len = seq_data.get_num_computed_tokens()
@@ -429,7 +431,8 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
             num_decode_tokens=num_decode_tokens, # 8
             seq_lens=seq_lens_tensor, # 3
             seqlen_q=seqlen_q, # 4
-            max_seqlen=max_seqlen, # 5
+            # max_seqlen=max_seqlen, # 5
+            max_seqlen=max(query_lens),
             seq_lens_tensor=seq_lens_tensor, # 9
             max_query_len=max_query_len,
             max_decode_seq_len=max_decode_seq_len, # 10
@@ -447,9 +450,7 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
             query_lens,
             self.device,
             pin_memory=False)
-        # import pdb
-        # pdb.set_trace()
-        print(f"New input_tokens' shape:{input_tokens_tensor.shape}")
+        # print(f"New input_tokens' shape:{input_tokens_tensor.shape}")
         return ModelInputForXPU(
             input_tokens=input_tokens_tensor,
             input_positions=input_positions_tensor,

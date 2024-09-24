@@ -511,9 +511,9 @@ class Scheduler:
                 if curr_loras is not None and seq_group.lora_int_id > 0:
                     curr_loras.add(seq_group.lora_int_id)
         
-        print("#####################################Debug#################################")
-        print(f"Decode sequence group length:{len(decode_seq_groups)}, Prefill sequence group length:{len(prefill_seq_groups)}")
-        print("#####################################Debug end#############################")
+        # print("#####################################Debug#################################")
+        # print(f"Decode sequence group length:{len(decode_seq_groups)}, Prefill sequence group length:{len(prefill_seq_groups)}")
+        # print("#####################################Debug end#############################")
         return SchedulerRunningOutputs(
             decode_seq_groups=decode_seq_groups,
             prefill_seq_groups=prefill_seq_groups,
@@ -983,7 +983,9 @@ class Scheduler:
                     seq_group.get_seqs(status=SequenceStatus.RUNNING)))
 
             do_sample = True
+            is_prompt = False
             if seq_group.is_prefill():
+                is_prompt = True
                 seqs = seq_group.get_seqs()
                 # Prefill has only 1 sequence.
                 assert len(seqs) == 1
@@ -998,10 +1000,10 @@ class Scheduler:
 
             # It assumes the scheduled_seq_groups is ordered by
             # prefill < decoding.
-            is_prompt = seq_group.is_prefill()
             seq_group_metadata = SequenceGroupMetadata(
                 request_id=seq_group.request_id,
                 is_prompt=is_prompt,
+                # is_prompt=True,
                 seq_data=seq_data,
                 sampling_params=seq_group.sampling_params,
                 block_tables=block_tables,
