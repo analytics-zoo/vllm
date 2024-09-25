@@ -263,10 +263,6 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
         num_decode_tokens = 0
 
         if len(seq_group_metadata_list) == 0:
-            print("##############################Debug#######################")
-            print("get zero length seq_group_metadata_list")
-            print("##############################Debug end#######################")
-            # TODO: return an empty result
             return None
         
         assert self.sliding_window is None, "TODO: support sliding window later"
