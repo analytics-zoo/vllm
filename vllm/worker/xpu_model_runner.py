@@ -139,7 +139,11 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
             (input_tokens, input_positions,
              attn_metadata) = self._prepare_decode(
                  self.seq_group_metadata_list)
+<<<<<<< HEAD
             seq_lens = attn_metadata.seq_lens
+=======
+            seq_lens = None
+>>>>>>> vllm-063-post1
             multi_modal_kwargs = None
 
         return self.model_input_cls(
@@ -374,13 +378,12 @@ class XPUModelRunnerBase(ModelRunnerBase[TModelInputForXPU]):
         self.block_size = cache_config.block_size
 
         self.attn_backend = get_attn_backend(
-            self.model_config.get_num_attention_heads(self.parallel_config),
             self.model_config.get_head_size(),
-            self.model_config.get_num_kv_heads(self.parallel_config),
             self.model_config.get_sliding_window(),
             self.model_config.dtype,
             self.kv_cache_dtype,
             self.block_size,
+            self.model_config.is_attention_free,
         )
 
         # Multi-modal data support
@@ -471,6 +474,7 @@ class XPUModelRunnerBase(ModelRunnerBase[TModelInputForXPU]):
 
         # Run the model with the dummy inputs.
         num_layers = self.model_config.get_num_layers(self.parallel_config)
+<<<<<<< HEAD
         # # use an empty tensor instead of `None`` to force Dynamo to pass
         # # it by reference, rather by specializing on the value ``None``.
         # # the `dtype` argument does not matter, and we use `float32` as
@@ -479,6 +483,15 @@ class XPUModelRunnerBase(ModelRunnerBase[TModelInputForXPU]):
         #     torch.tensor([], dtype=torch.float32, device=self.device)
         # ] * num_layers
         kv_caches = [None] * num_layers
+=======
+        # use an empty tensor instead of `None`` to force Dynamo to pass
+        # it by reference, rather by specializing on the value ``None``.
+        # the `dtype` argument does not matter, and we use `float32` as
+        # a placeholder (it has wide hardware support).
+        kv_caches = [
+            torch.tensor([], dtype=torch.float32, device=self.device)
+        ] * num_layers
+>>>>>>> vllm-063-post1
         finished_requests_ids = [seq.request_id for seq in seqs]
         model_input = self.prepare_model_input(
             seqs, finished_requests_ids=finished_requests_ids)
@@ -570,7 +583,10 @@ class XPUModelRunner(XPUModelRunnerBase[ModelInputForXPUWithSamplingMetadata]):
             pin_memory=False,
             generators=generators,
             cache=self.sampling_metadata_cache)
+<<<<<<< HEAD
 
+=======
+>>>>>>> vllm-063-post1
 
         return dataclasses.replace(model_input,
                                    sampling_metadata=sampling_metadata,

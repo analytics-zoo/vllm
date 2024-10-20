@@ -2,8 +2,8 @@ import argparse
 import dataclasses
 import json
 from dataclasses import dataclass
-from typing import (TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple,
-                    Type, Union)
+from typing import (TYPE_CHECKING, Any, Dict, List, Literal, Mapping, Optional,
+                    Tuple, Type, Union, cast)
 
 import torch
 
@@ -89,7 +89,7 @@ class EngineArgs:
     trust_remote_code: bool = False
     download_dir: Optional[str] = None
     load_format: str = 'auto'
-    config_format: str = 'auto'
+    config_format: ConfigFormat = ConfigFormat.AUTO
     dtype: str = 'auto'
     kv_cache_dtype: str = 'auto'
     quantization_param_path: Optional[str] = None
@@ -107,7 +107,7 @@ class EngineArgs:
     block_size: int = 16
     enable_prefix_caching: bool = False
     disable_sliding_window: bool = False
-    use_v2_block_manager: bool = False
+    use_v2_block_manager: bool = True
     swap_space: float = 4  # GiB
     cpu_offload_gb: float = 0  # GiB
     gpu_memory_utilization: float = 0.90
@@ -145,7 +145,7 @@ class EngineArgs:
     max_cpu_loras: Optional[int] = None
     device: str = 'auto'
     num_scheduler_steps: int = 1
-    multi_step_stream_outputs: bool = False
+    multi_step_stream_outputs: bool = True
     ray_workers_use_nsight: bool = False
     num_gpu_blocks_override: Optional[int] = None
     num_lookahead_slots: int = 0
@@ -162,6 +162,7 @@ class EngineArgs:
     speculative_model_quantization: Optional[str] = None
     speculative_draft_tensor_parallel_size: Optional[int] = None
     num_speculative_tokens: Optional[int] = None
+    speculative_disable_mqa_scorer: Optional[bool] = False
     speculative_max_model_len: Optional[int] = None
     speculative_disable_by_batch_size: Optional[int] = None
     ngram_prompt_lookup_max: Optional[int] = None
@@ -177,10 +178,15 @@ class EngineArgs:
     disable_async_output_proc: bool = False
     override_neuron_config: Optional[Dict[str, Any]] = None
     mm_processor_kwargs: Optional[Dict[str, Any]] = None
+    scheduling_policy: Literal["fcfs", "priority"] = "fcfs"
 
     def __post_init__(self):
-        if self.tokenizer is None:
+        if not self.tokenizer:
             self.tokenizer = self.model
+
+        # Setup plugins
+        from vllm.plugins import load_general_plugins
+        load_general_plugins()
 
     @staticmethod
     def add_cli_args(parser: FlexibleArgumentParser) -> FlexibleArgumentParser:
@@ -369,7 +375,11 @@ class EngineArgs:
                             'capping to sliding window size')
         parser.add_argument('--use-v2-block-manager',
                             action='store_true',
-                            help='Use BlockSpaceMangerV2.')
+                            help='[DEPRECATED] block manager v1 has been '
+                            'removed and SelfAttnBlockSpaceManager (i.e. '
+                            'block manager v2) is now the default. '
+                            'Setting this flag to True or False'
+                            ' has no effect on vLLM behavior.')
         parser.add_argument(
             '--num-lookahead-slots',
             type=int,
@@ -445,11 +455,12 @@ class EngineArgs:
                             'None, we assume the model weights are not '
                             'quantized and use `dtype` to determine the data '
                             'type of the weights.')
-        parser.add_argument('--rope-scaling',
-                            default=None,
-                            type=json.loads,
-                            help='RoPE scaling configuration in JSON format. '
-                            'For example, {"type":"dynamic","factor":2.0}')
+        parser.add_argument(
+            '--rope-scaling',
+            default=None,
+            type=json.loads,
+            help='RoPE scaling configuration in JSON format. '
+            'For example, {"rope_type":"dynamic","factor":2.0}')
         parser.add_argument('--rope-theta',
                             default=None,
                             type=float,
@@ -598,13 +609,17 @@ class EngineArgs:
 
         parser.add_argument(
             '--multi-step-stream-outputs',
-            action='store_true',
-            help='If True, then multi-step will stream outputs for every step')
+            action=StoreBoolean,
+            default=EngineArgs.multi_step_stream_outputs,
+            nargs="?",
+            const="True",
+            help='If False, then multi-step will stream outputs at the end '
+            'of all steps')
         parser.add_argument(
             '--scheduler-delay-factor',
             type=float,
             default=EngineArgs.scheduler_delay_factor,
-            help='Apply a delay (of delay factor multiplied by previous'
+            help='Apply a delay (of delay factor multiplied by previous '
             'prompt latency) before scheduling next prompt.')
         parser.add_argument(
             '--enable-chunked-prefill',
@@ -627,7 +642,7 @@ class EngineArgs:
             type=nullable_str,
             choices=[*QUANTIZATION_METHODS, None],
             default=EngineArgs.speculative_model_quantization,
-            help='Method used to quantize the weights of speculative model.'
+            help='Method used to quantize the weights of speculative model. '
             'If None, we first check the `quantization_config` '
             'attribute in the model config file. If that is '
             'None, we assume the model weights are not '
@@ -639,6 +654,12 @@ class EngineArgs:
             default=EngineArgs.num_speculative_tokens,
             help='The number of speculative tokens to sample from '
             'the draft model in speculative decoding.')
+        parser.add_argument(
+            '--speculative-disable-mqa-scorer',
+            action='store_true',
+            help=
+            'If set to True, the MQA scorer will be disabled in speculative '
+            ' and fall back to batch expansion')
         parser.add_argument(
             '--speculative-draft-tensor-parallel-size',
             '-spec-draft-tp',
@@ -789,13 +810,20 @@ class EngineArgs:
             "lower performance.")
         parser.add_argument(
             '--override-neuron-config',
-            type=lambda configs: {
-                str(key): value
-                for key, value in
-                (config.split(':') for config in configs.split(','))
-            },
+            type=json.loads,
             default=None,
-            help="override or set neuron device configuration.")
+            help="Override or set neuron device configuration. "
+            "e.g. {\"cast_logits_dtype\": \"bloat16\"}.'")
+
+        parser.add_argument(
+            '--scheduling-policy',
+            choices=['fcfs', 'priority'],
+            default="fcfs",
+            help='The scheduling policy to use. "fcfs" (first come first served'
+            ', i.e. requests are handled in order of arrival; default) '
+            'or "priority" (requests are handled based on given '
+            'priority (lower value means earlier handling) and time of '
+            'arrival deciding any ties).')
 
         return parser
 
@@ -810,7 +838,8 @@ class EngineArgs:
     def create_model_config(self) -> ModelConfig:
         return ModelConfig(
             model=self.model,
-            tokenizer=self.tokenizer,
+            # We know this is not None because we set it in __post_init__
+            tokenizer=cast(str, self.tokenizer),
             tokenizer_mode=self.tokenizer_mode,
             trust_remote_code=self.trust_remote_code,
             dtype=self.dtype,
@@ -881,11 +910,13 @@ class EngineArgs:
             self.enable_prefix_caching = False
 
         cache_config = CacheConfig(
+            # neuron needs block_size = max_model_len
             block_size=self.block_size if self.device != "neuron" else
-            self.max_model_len,  # neuron needs block_size = max_model_len
+            (self.max_model_len if self.max_model_len is not None else 0),
             gpu_memory_utilization=self.gpu_memory_utilization,
             swap_space=self.swap_space,
             cache_dtype=self.kv_cache_dtype,
+            is_attention_free=model_config.is_attention_free,
             num_gpu_blocks_override=self.num_gpu_blocks_override,
             sliding_window=model_config.get_sliding_window(),
             enable_prefix_caching=self.enable_prefix_caching,
@@ -919,13 +950,9 @@ class EngineArgs:
                 use_sliding_window = (model_config.get_sliding_window()
                                       is not None)
                 use_spec_decode = self.speculative_model is not None
-                has_seqlen_agnostic_layers = (
-                    model_config.contains_seqlen_agnostic_layers(
-                        parallel_config))
                 if (is_gpu and not use_sliding_window and not use_spec_decode
                         and not self.enable_lora
-                        and not self.enable_prompt_adapter
-                        and not has_seqlen_agnostic_layers):
+                        and not self.enable_prompt_adapter):
                     self.enable_chunked_prefill = True
                     logger.warning(
                         "Chunked prefill is enabled by default for models with "
@@ -943,12 +970,6 @@ class EngineArgs:
                 "in low performance due to small KV cache space. Consider "
                 "setting --max-model-len to a smaller value.", max_model_len)
 
-        if self.num_scheduler_steps > 1 and not self.use_v2_block_manager:
-            self.use_v2_block_manager = True
-            logger.warning(
-                "Enabled BlockSpaceManagerV2 because it is "
-                "required for multi-step (--num-scheduler-steps > 1)")
-
         speculative_config = SpeculativeConfig.maybe_create_spec_config(
             target_model_config=model_config,
             target_parallel_config=parallel_config,
@@ -959,11 +980,11 @@ class EngineArgs:
             speculative_draft_tensor_parallel_size = \
                 self.speculative_draft_tensor_parallel_size,
             num_speculative_tokens=self.num_speculative_tokens,
+            speculative_disable_mqa_scorer=self.speculative_disable_mqa_scorer,
             speculative_disable_by_batch_size=self.
             speculative_disable_by_batch_size,
             speculative_max_model_len=self.speculative_max_model_len,
             enable_chunked_prefill=self.enable_chunked_prefill,
-            use_v2_block_manager=self.use_v2_block_manager,
             disable_log_stats=self.disable_log_stats,
             ngram_prompt_lookup_max=self.ngram_prompt_lookup_max,
             ngram_prompt_lookup_min=self.ngram_prompt_lookup_min,
@@ -976,13 +997,15 @@ class EngineArgs:
             disable_logprobs=self.disable_logprobs_during_spec_decoding,
         )
 
+        # Reminder: Please update docs/source/serving/compatibility_matrix.rst
+        # If the feature combo become valid
         if self.num_scheduler_steps > 1:
             if speculative_config is not None:
                 raise ValueError("Speculative decoding is not supported with "
                                  "multi-step (--num-scheduler-steps > 1)")
-            if self.enable_chunked_prefill:
-                raise ValueError("Chunked prefill is not supported with "
-                                 "multi-step (--num-scheduler-steps > 1)")
+            if self.enable_chunked_prefill and self.pipeline_parallel_size > 1:
+                raise ValueError("Multi-Step Chunked-Prefill is not supported "
+                                 "for pipeline-parallel-size > 1")
 
         # make sure num_lookahead_slots is set the higher value depending on
         # if we are using speculative decoding or multi-step
@@ -992,11 +1015,20 @@ class EngineArgs:
             if speculative_config is None \
             else speculative_config.num_lookahead_slots
 
+        if not self.use_v2_block_manager:
+            logger.warning(
+                "[DEPRECATED] Block manager v1 has been removed, "
+                "and setting --use-v2-block-manager to True or False has "
+                "no effect on vLLM behavior. Please remove "
+                "--use-v2-block-manager in your engine argument. "
+                "If your use case is not supported by "
+                "SelfAttnBlockSpaceManager (i.e. block manager v2),"
+                " please file an issue with detailed information.")
+
         scheduler_config = SchedulerConfig(
             max_num_batched_tokens=self.max_num_batched_tokens,
             max_num_seqs=self.max_num_seqs,
             max_model_len=model_config.max_model_len,
-            use_v2_block_manager=self.use_v2_block_manager,
             num_lookahead_slots=num_lookahead_slots,
             delay_factor=self.scheduler_delay_factor,
             enable_chunked_prefill=self.enable_chunked_prefill,
@@ -1007,6 +1039,7 @@ class EngineArgs:
             multi_step_stream_outputs=self.multi_step_stream_outputs,
             send_delta_data=(envs.VLLM_USE_RAY_SPMD_WORKER
                              and parallel_config.use_ray),
+            policy=self.scheduling_policy,
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,
@@ -1050,13 +1083,6 @@ class EngineArgs:
             collect_model_execute_time="worker" in detailed_trace_modules
             or "all" in detailed_trace_modules,
         )
-
-        if (model_config.get_sliding_window() is not None
-                and scheduler_config.chunked_prefill_enabled
-                and not scheduler_config.use_v2_block_manager):
-            raise ValueError(
-                "Chunked prefill is not supported with sliding window. "
-                "Set --disable-sliding-window to disable sliding window.")
 
         return EngineConfig(
             model_config=model_config,

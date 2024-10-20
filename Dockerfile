@@ -27,6 +27,14 @@ RUN echo 'tzdata tzdata/Areas select America' | debconf-set-selections \
     && curl -sS https://bootstrap.pypa.io/get-pip.py | python${PYTHON_VERSION} \
     && python3 --version && python3 -m pip --version
 
+# Upgrade to GCC 10 to avoid https://gcc.gnu.org/bugzilla/show_bug.cgi?id=92519
+# as it was causing spam when compiling the CUTLASS kernels
+RUN apt-get install -y gcc-10 g++-10
+RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 110 --slave /usr/bin/g++ g++ /usr/bin/g++-10
+RUN <<EOF
+gcc --version
+EOF
+
 # Workaround for https://github.com/openai/triton/issues/2507 and
 # https://github.com/pytorch/pytorch/issues/107960 -- hopefully
 # this won't be needed for future versions of this docker image
@@ -62,15 +70,10 @@ COPY requirements-build.txt requirements-build.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install -r requirements-build.txt
 
-# files and directories related to build wheels
-COPY csrc csrc
-COPY setup.py setup.py
-COPY cmake cmake
-COPY CMakeLists.txt CMakeLists.txt
-COPY requirements-common.txt requirements-common.txt
-COPY requirements-cuda.txt requirements-cuda.txt
-COPY pyproject.toml pyproject.toml
-COPY vllm vllm
+COPY . .
+ARG GIT_REPO_CHECK=0
+RUN --mount=type=bind,source=.git,target=.git \
+    if [ "$GIT_REPO_CHECK" != 0 ]; then bash tools/check_repo.sh ; fi
 
 # max jobs used by Ninja to build extensions
 ARG max_jobs=2
@@ -135,7 +138,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 #################### DEV IMAGE ####################
 #################### vLLM installation IMAGE ####################
 # image with vLLM installed
-FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu20.04 AS vllm-base
+FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu22.04 AS vllm-base
 ARG CUDA_VERSION=12.4.1
 ARG PYTHON_VERSION=3.12
 WORKDIR /vllm-workspace
@@ -173,6 +176,7 @@ RUN --mount=type=bind,from=build,src=/workspace/dist,target=/vllm-workspace/dist
 RUN --mount=type=cache,target=/root/.cache/pip \
     . /etc/environment && \
     python3 -m pip install https://github.com/flashinfer-ai/flashinfer/releases/download/v0.1.6/flashinfer-0.1.6+cu121torch2.4-cp${PYTHON_VERSION_STR}-cp${PYTHON_VERSION_STR}-linux_x86_64.whl
+COPY examples examples
 #################### vLLM installation IMAGE ####################
 
 

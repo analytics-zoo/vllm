@@ -1,17 +1,22 @@
-from typing import Tuple
-
 import torch
 
-from .interface import Platform, PlatformEnum
+from .interface import DeviceCapability, Platform, PlatformEnum
 
 
-class XpuPlatform(Platform):
+class XPUPlatform(Platform):
     _enum = PlatformEnum.XPU
 
     @staticmethod
-    def get_device_capability(device_id: int = 0) -> Tuple[int, int]:
-        return (100, 9)
+    def get_device_capability(device_id: int = 0) -> DeviceCapability:
+        major, minor, *_ = torch.xpu.get_device_capability(
+            device_id)['version'].split('.')
+        return DeviceCapability(major=int(major), minor=int(minor))
 
     @staticmethod
-    def inference_mode():
-        return torch.no_grad()
+    def get_device_name(device_id: int = 0) -> str:
+        return torch.xpu.get_device_name(device_id)
+
+    @classmethod
+    def get_device_total_memory(cls, device_id: int = 0) -> int:
+        device_props = torch.xpu.get_device_properties(device_id)
+        return device_props.total_memory

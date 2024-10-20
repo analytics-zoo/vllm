@@ -113,7 +113,7 @@ def repeat_and_sort_requests(requests: List[Tuple[str, int, int]],
 def main(args):
     tokenizer = get_tokenizer(args.model, trust_remote_code=True)
     input_length_range = tuple(map(int, args.input_length_range.split(':')))
-
+    random.seed(args.seed)
     if args.dataset_path is not None:
         print(f"Start to sample {args.num_prompts} prompts"
               "from {args.dataset_path}")
@@ -133,7 +133,6 @@ def main(args):
               tokenizer_mode='auto',
               trust_remote_code=True,
               enforce_eager=True,
-              use_v2_block_manager=args.use_v2_block_manager,
               tensor_parallel_size=args.tensor_parallel_size,
               enable_prefix_caching=args.enable_prefix_caching)
 
@@ -175,9 +174,6 @@ if __name__ == "__main__":
     parser.add_argument('--enable-prefix-caching',
                         action='store_true',
                         help='enable prefix caching')
-    parser.add_argument('--use-v2-block-manager',
-                        action='store_true',
-                        help='Use BlockSpaceMangerV2')
     parser.add_argument('--num-prompts',
                         type=int,
                         default=1,
@@ -194,5 +190,9 @@ if __name__ == "__main__":
                         default='128:256',
                         help='Range of input lengths for sampling prompts,'
                         'specified as "min:max" (e.g., "128:256").')
+    parser.add_argument("--seed",
+                        type=int,
+                        default=0,
+                        help='Random seed for reproducibility')
     args = parser.parse_args()
     main(args)

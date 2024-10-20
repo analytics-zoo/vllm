@@ -31,28 +31,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 _EMBEDDING_MODEL_MAX_NUM_BATCHED_TOKENS = 32768
-_MULTIMODAL_MODEL_MAX_NUM_BATCHED_TOKENS = 4096
-
-_PP_SUPPORTED_MODELS = [
-    "AquilaForCausalLM",
-    "AquilaModel",
-    "DeepseekV2ForCausalLM",
-    "GPT2LMHeadModel",
-    "InternLM2ForCausalLM",
-    "InternLMForCausalLM",
-    "InternVLChatModel",
-    "JAISLMHeadModel",
-    "LlamaForCausalLM",
-    "LLaMAForCausalLM",
-    "MistralForCausalLM",
-    "MixtralForCausalLM",
-    "NemotronForCausalLM",
-    "Phi3ForCausalLM",
-    "Qwen2ForCausalLM",
-    "Qwen2MoeForCausalLM",
-    "QWenLMHeadModel",
-    "Qwen2VLForConditionalGeneration",
-]
+_MULTIMODAL_MODEL_MAX_NUM_BATCHED_TOKENS = 5120
 
 
 class ModelConfig:
@@ -194,14 +173,20 @@ class ModelConfig:
         if self.enforce_eager is None:
             self.enforce_eager = False
 
-        if (not self.disable_sliding_window
-                and self.hf_text_config.model_type == "gemma2"
-                and self.hf_text_config.sliding_window is not None):
+        sliding_window = getattr(self.hf_text_config, "sliding_window", None)
+        has_interleaved_attention = (sliding_window is not None) and (
+            isinstance(sliding_window, list) or
+            (self.hf_text_config.model_type in ["gemma2"]))
+
+        if (not self.disable_sliding_window and has_interleaved_attention):
+            sliding_window_len_min = get_min_sliding_window(
+                self.hf_text_config.sliding_window)
+
             print_warning_once(
-                "Gemma 2 uses sliding window attention for every odd layer, "
+                f"{self.hf_text_config.model_type} has interleaved attention, "
                 "which is currently not supported by vLLM. Disabling sliding "
                 "window and capping the max length to the sliding window size "
-                f"({self.hf_text_config.sliding_window}).")
+                f"({sliding_window_len_min}).")
             self.disable_sliding_window = True
 
         self.max_model_len = _get_and_verify_max_len(
@@ -217,6 +202,9 @@ class ModelConfig:
         if not self.skip_tokenizer_init:
             self._verify_tokenizer_mode()
 
+        self.is_attention_free = self._init_attention_free()
+        self.has_inner_state = self._init_has_inner_state()
+
         self.override_neuron_config = override_neuron_config if is_neuron(
         ) else None
         self._verify_embedding_mode()
@@ -228,16 +216,22 @@ class ModelConfig:
         self, limit_mm_per_prompt: Optional[Mapping[str, int]]
     ) -> Optional["MultiModalConfig"]:
         architectures = getattr(self.hf_config, "architectures", [])
-        if any(
-                ModelRegistry.is_multimodal_model(arch)
-                for arch in architectures):
+        if ModelRegistry.is_multimodal_model(architectures):
             return MultiModalConfig(limit_per_prompt=limit_mm_per_prompt or {})
-        else:
-            if limit_mm_per_prompt:
-                raise ValueError(
-                    "limit_mm_per_prompt is only supported for multimodal "
-                    "models.")
-            return None
+
+        if limit_mm_per_prompt:
+            raise ValueError("`limit_mm_per_prompt` is only supported for "
+                             "multimodal models.")
+
+        return None
+
+    def _init_attention_free(self) -> bool:
+        architectures = getattr(self.hf_config, "architectures", [])
+        return ModelRegistry.is_attention_free_model(architectures)
+
+    def _init_has_inner_state(self) -> bool:
+        architectures = getattr(self.hf_config, "architectures", [])
+        return ModelRegistry.model_has_inner_state(architectures)
 
     def _verify_tokenizer_mode(self) -> None:
         tokenizer_mode = self.tokenizer_mode.lower()
@@ -249,8 +243,16 @@ class ModelConfig:
 
     def _verify_embedding_mode(self) -> None:
         architectures = getattr(self.hf_config, "architectures", [])
-        self.embedding_mode = any(
-            ModelRegistry.is_embedding_model(arch) for arch in architectures)
+
+        # TODO: Allow the same model architecture to be specified as either
+        # generation or embedding model
+        if "Phi3VForCausalLM" in architectures:
+            # Match both remote and local names
+            embedding_mode = "/VLM2Vec" in self.model
+        else:
+            embedding_mode = ModelRegistry.is_embedding_model(architectures)
+
+        self.embedding_mode = embedding_mode
 
     def _parse_quant_hf_config(self):
         quant_cfg = getattr(self.hf_config, "quantization_config", None)
@@ -372,12 +374,23 @@ class ModelConfig:
             self.use_async_output_proc = False
             return
 
+<<<<<<< HEAD
         # if device_config.device_type not in ("cuda", "tpu"):
         #     logger.warning(
         #         "Async output processing is only supported for CUDA or TPU. "
         #         "Disabling it for other platforms.")
         #     self.use_async_output_proc = False
         #     return
+=======
+        # Reminder: Please update docs/source/serving/compatibility_matrix.rst
+        # If the feature combo become valid
+        if device_config.device_type not in ("cuda", "tpu", "xpu"):
+            logger.warning(
+                "Async output processing is only supported for CUDA, TPU, XPU. "
+                "Disabling it for other platforms.")
+            self.use_async_output_proc = False
+            return
+>>>>>>> vllm-063-post1
 
         if envs.VLLM_USE_RAY_SPMD_WORKER:
             logger.warning(
@@ -385,6 +398,8 @@ class ModelConfig:
             self.use_async_output_proc = False
             return
 
+        # Reminder: Please update docs/source/serving/compatibility_matrix.rst
+        # If the feature combo become valid
         if device_config.device_type == "cuda" and self.enforce_eager:
             logger.warning(
                 "To see benefits of async output processing, enable CUDA "
@@ -398,6 +413,8 @@ class ModelConfig:
         if self.embedding_mode:
             self.use_async_output_proc = False
 
+        # Reminder: Please update docs/source/serving/compatibility_matrix.rst
+        # If the feature combo become valid
         if speculative_config:
             logger.warning("Async output processing is not supported with"
                            " speculative decoding currently.")
@@ -417,19 +434,20 @@ class ModelConfig:
                 f"({tensor_parallel_size}).")
 
         pipeline_parallel_size = parallel_config.pipeline_parallel_size
-        architectures = getattr(self.hf_config, "architectures", [])
-        if not all(arch in _PP_SUPPORTED_MODELS
-                   for arch in architectures) and pipeline_parallel_size > 1:
-            raise NotImplementedError(
-                "Pipeline parallelism is only supported for the following "
-                f" architectures: {_PP_SUPPORTED_MODELS}.")
+        if pipeline_parallel_size > 1:
+            architectures = getattr(self.hf_config, "architectures", [])
+            if not ModelRegistry.is_pp_supported_model(architectures):
+                raise NotImplementedError(
+                    "Pipeline parallelism is not supported for this model. "
+                    "Supported models implement the `SupportsPP` interface.")
 
-        if pipeline_parallel_size > 1 and self.use_async_output_proc:
-            logger.warning("Async output processor is not supported with "
-                           "pipeline parallelism currently. Disabling it.")
-            self.use_async_output_proc = False
+            if self.use_async_output_proc:
+                logger.warning("Async output processor is not supported with "
+                               "pipeline parallelism currently. Disabling it.")
+                self.use_async_output_proc = False
 
-    def get_hf_config_sliding_window(self) -> Optional[int]:
+    def get_hf_config_sliding_window(
+            self) -> Union[Optional[int], List[Optional[int]]]:
         """Get the sliding window size, or None if disabled."""
 
         # Some models, like Qwen2 and Qwen1.5, use `use_sliding_window` in
@@ -440,7 +458,7 @@ class ModelConfig:
             return None
         return getattr(self.hf_text_config, "sliding_window", None)
 
-    def get_sliding_window(self) -> Optional[int]:
+    def get_sliding_window(self) -> Optional[Union[int, List[Optional[int]]]]:
         """Get the sliding window size, or None if disabled.
         """
         # If user disables sliding window, return None.
@@ -462,6 +480,10 @@ class ModelConfig:
             # FlashAttention supports only head_size 32, 64, 128, 256,
             # we need to pad head_size 192 to 256
             return 256
+
+        if self.is_attention_free:
+            return 0
+
         if hasattr(self.hf_text_config, "head_dim"):
             return self.hf_text_config.head_dim
         # FIXME(woosuk): This may not be true for all models.
@@ -492,6 +514,9 @@ class ModelConfig:
         if self.hf_config.model_type == "dbrx":
             return getattr(self.hf_config.attn_config, "kv_n_heads",
                            self.hf_config.num_attention_heads)
+
+        if self.is_attention_free:
+            return 0
 
         attributes = [
             # For Falcon:
@@ -535,31 +560,17 @@ class ModelConfig:
         start, end = get_pp_indices(total_num_hidden_layers, pp_rank, pp_size)
         return end - start
 
-    def contains_seqlen_agnostic_layers(
-            self, parallel_config: "ParallelConfig") -> bool:
-        """True for Mamba/SSM models (Jamba)"""
-        return self._get_num_seqlen_agnostic_layers(parallel_config) > 0
-
-    def get_layers_block_type(self,
-                              parallel_config: "ParallelConfig") -> List[str]:
-        num_layers = self.get_num_layers(parallel_config)
-        # Transformers supports layers_block_type @property
-        return getattr(self.hf_config, "layers_block_type",
-                       ["attention"] * num_layers)
-
     def get_num_attention_layers(self,
                                  parallel_config: "ParallelConfig") -> int:
-        return len([
-            t for t in self.get_layers_block_type(parallel_config)
-            if t == "attention"
-        ])
+        if self.is_attention_free:
+            return 0
 
-    def _get_num_seqlen_agnostic_layers(
-            self, parallel_config: "ParallelConfig") -> int:
-        return len([
-            t for t in self.get_layers_block_type(parallel_config)
-            if t != "attention"
-        ])
+        num_layers = self.get_num_layers(parallel_config)
+
+        # Transformers supports layers_block_type @property
+        layers = getattr(self.hf_config, "layers_block_type",
+                         ["attention"] * num_layers)
+        return len([t for t in layers if t == "attention"])
 
     def get_multimodal_config(self) -> "MultiModalConfig":
         """
@@ -609,6 +620,7 @@ class CacheConfig:
         gpu_memory_utilization: float,
         swap_space: float,
         cache_dtype: str,
+        is_attention_free: bool = False,
         num_gpu_blocks_override: Optional[int] = None,
         sliding_window: Optional[int] = None,
         enable_prefix_caching: bool = False,
@@ -619,16 +631,18 @@ class CacheConfig:
         self.swap_space_bytes = swap_space * GiB_bytes
         self.num_gpu_blocks_override = num_gpu_blocks_override
         self.cache_dtype = cache_dtype
+        self.is_attention_free = is_attention_free
         self.sliding_window = sliding_window
         self.enable_prefix_caching = enable_prefix_caching
         self.cpu_offload_gb = cpu_offload_gb
+
         self._verify_args()
         self._verify_cache_dtype()
         self._verify_prefix_caching()
 
         # Will be set after profiling.
-        self.num_gpu_blocks = None
-        self.num_cpu_blocks = None
+        self.num_gpu_blocks: Optional[int] = None
+        self.num_cpu_blocks: Optional[int] = None
 
     def metrics_info(self):
         # convert cache_config to dict(key: str, value: str) for prometheus
@@ -705,7 +719,8 @@ class TokenizerPoolConfig:
 
     @classmethod
     def create_config(
-        cls, tokenizer_pool_size: int, tokenizer_pool_type: str,
+        cls, tokenizer_pool_size: int,
+        tokenizer_pool_type: Union[str, Type["BaseTokenizerGroup"]],
         tokenizer_pool_extra_config: Optional[Union[str, dict]]
     ) -> Optional["TokenizerPoolConfig"]:
         """Create a TokenizerPoolConfig from the given parameters.
@@ -943,7 +958,6 @@ class SchedulerConfig:
             iteration.
         max_model_len: Maximum length of a sequence (including prompt
             and generated text).
-        use_v2_block_manager: Whether to use the BlockSpaceManagerV2 or not.
         num_lookahead_slots: The number of slots to allocate per sequence per
             step, beyond the known token ids. This is used in speculative
             decoding to store KV activations of tokens which may or may not be
@@ -970,7 +984,6 @@ class SchedulerConfig:
                  max_num_batched_tokens: Optional[int],
                  max_num_seqs: int,
                  max_model_len: int,
-                 use_v2_block_manager: bool = False,
                  num_lookahead_slots: int = 0,
                  delay_factor: float = 0.0,
                  enable_chunked_prefill: bool = False,
@@ -983,9 +996,16 @@ class SchedulerConfig:
                  policy: str = "fcfs") -> None:
         if max_num_batched_tokens is None:
             if enable_chunked_prefill:
-                # It is the values that have the best balance between ITL
-                # and TTFT on A100. Note it is not optimized for throughput.
-                max_num_batched_tokens = 512
+                if num_scheduler_steps > 1:
+                    # Multi-step Chunked-Prefill doesn't allow prompt-chunking
+                    # for now. Have max_num_batched_tokens set to max_model_len
+                    # so we don't reject sequences on account of a short
+                    # max_num_batched_tokens.
+                    max_num_batched_tokens = max(max_model_len, 2048)
+                else:
+                    # It is the values that have the best balance between ITL
+                    # and TTFT on A100. Note it is not optimized for throughput.
+                    max_num_batched_tokens = 512
             else:
                 # If max_model_len is too short, use 2048 as the default value
                 # for higher throughput.
@@ -1013,7 +1033,6 @@ class SchedulerConfig:
 
         self.max_num_seqs = max_num_seqs
         self.max_model_len = max_model_len
-        self.use_v2_block_manager = use_v2_block_manager
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
         self.chunked_prefill_enabled = enable_chunked_prefill
@@ -1109,9 +1128,9 @@ class SpeculativeConfig:
         speculative_model_quantization: Optional[str],
         speculative_draft_tensor_parallel_size: Optional[int],
         num_speculative_tokens: Optional[int],
+        speculative_disable_mqa_scorer: Optional[bool],
         speculative_max_model_len: Optional[int],
         enable_chunked_prefill: bool,
-        use_v2_block_manager: bool,
         disable_log_stats: bool,
         speculative_disable_by_batch_size: Optional[int],
         ngram_prompt_lookup_max: Optional[int],
@@ -1143,15 +1162,15 @@ class SpeculativeConfig:
             num_speculative_tokens (Optional[int]): The number of speculative
                 tokens, if provided. Will default to the number in the draft
                 model config if present, otherwise is required.
+            speculative_disable_mqa_scorer (Optional[bool]): Disable the MQA
+                scorer for the speculative model and fall back to batch
+                expansion for scoring.
             speculative_max_model_len (Optional[int]): The maximum model len of
                 the speculative model. Used when testing the ability to skip
                 speculation for some sequences.
             enable_chunked_prefill (bool): Whether vLLM is configured to use
                 chunked prefill or not. Used for raising an error since its not
                 yet compatible with spec decode.
-            use_v2_block_manager (bool): Whether vLLM is configured to use the
-                v2 block manager or not. Used for raising an error since the v2
-                block manager is required with spec decode.
             speculative_disable_by_batch_size (Optional[int]): Disable
                 speculative decoding for new incoming requests when the number
                 of enqueue requests  is larger than this value, if provided.
@@ -1195,15 +1214,12 @@ class SpeculativeConfig:
                              "speculative decoding is > 1, but got "
                              f"{speculative_disable_by_batch_size=}")
 
+        # Reminder: Please update docs/source/serving/compatibility_matrix.rst
+        # If the feature combo become valid
         if enable_chunked_prefill:
             raise ValueError(
                 "Speculative decoding and chunked prefill are "
                 f"currently mutually exclusive ({enable_chunked_prefill=}).")
-
-        if not use_v2_block_manager:
-            raise ValueError(
-                "Speculative decoding requires usage of the V2 "
-                "block manager. Enable it with --use-v2-block-manager.")
 
         # TODO: The user should be able to specify revision/max model len
         # for the draft model. It is not currently supported.
@@ -1297,6 +1313,7 @@ class SpeculativeConfig:
             draft_model_config,
             draft_parallel_config,
             num_speculative_tokens,
+            speculative_disable_mqa_scorer,
             speculative_disable_by_batch_size,
             ngram_prompt_lookup_max,
             ngram_prompt_lookup_min,
@@ -1393,6 +1410,7 @@ class SpeculativeConfig:
         draft_model_config: ModelConfig,
         draft_parallel_config: ParallelConfig,
         num_speculative_tokens: int,
+        speculative_disable_mqa_scorer: Optional[bool],
         speculative_disable_by_batch_size: Optional[int],
         ngram_prompt_lookup_max: Optional[int],
         ngram_prompt_lookup_min: Optional[int],
@@ -1439,6 +1457,7 @@ class SpeculativeConfig:
         self.draft_model_config = draft_model_config
         self.draft_parallel_config = draft_parallel_config
         self.num_speculative_tokens = num_speculative_tokens
+        self.speculative_disable_mqa_scorer = speculative_disable_mqa_scorer
         self.speculative_disable_by_batch_size = \
             speculative_disable_by_batch_size
         self.ngram_prompt_lookup_max = ngram_prompt_lookup_max or 0
@@ -1512,7 +1531,7 @@ class LoRAConfig:
     max_loras: int
     fully_sharded_loras: bool = False
     max_cpu_loras: Optional[int] = None
-    lora_dtype: Optional[torch.dtype] = None
+    lora_dtype: Optional[Union[torch.dtype, str]] = None
     lora_extra_vocab_size: int = 256
     # This is a constant.
     lora_vocab_padding_size: ClassVar[int] = 256
@@ -1553,6 +1572,8 @@ class LoRAConfig:
                            model_config.quantization)
 
     def verify_with_scheduler_config(self, scheduler_config: SchedulerConfig):
+        # Reminder: Please update docs/source/serving/compatibility_matrix.rst
+        # If the feature combo become valid
         if scheduler_config.chunked_prefill_enabled:
             raise ValueError("LoRA is not supported with chunked prefill yet.")
 
@@ -1662,7 +1683,7 @@ def _get_and_verify_max_len(
     hf_config: PretrainedConfig,
     max_model_len: Optional[int],
     disable_sliding_window: bool,
-    sliding_window_len: Optional[int],
+    sliding_window_len: Optional[Union[int, List[Optional[int]]]],
     spec_target_max_model_len: Optional[int] = None,
 ) -> int:
     """Get and verify the model's maximum length."""
@@ -1695,9 +1716,12 @@ def _get_and_verify_max_len(
     # If sliding window is manually disabled, max_length should be less
     # than the sliding window length in the model config.
     if disable_sliding_window and sliding_window_len is not None:
+
+        sliding_window_len_min = get_min_sliding_window(sliding_window_len)
         max_len_key = "sliding_window" \
-            if sliding_window_len < derived_max_model_len else max_len_key
-        derived_max_model_len = min(derived_max_model_len, sliding_window_len)
+            if sliding_window_len_min < derived_max_model_len else max_len_key
+        derived_max_model_len = min(derived_max_model_len,
+                                    sliding_window_len_min)
 
     # If none of the keys were found in the config, use a default and
     # log a warning.
@@ -1721,16 +1745,10 @@ def _get_and_verify_max_len(
 
     rope_scaling = getattr(hf_config, "rope_scaling", None)
     if rope_scaling is not None:
-        if "type" in rope_scaling:
-            rope_type = rope_scaling["type"]
-        elif "rope_type" in rope_scaling:
-            rope_type = rope_scaling["rope_type"]
-        else:
-            raise ValueError(
-                "rope_scaling must have a 'type' or 'rope_type' key.")
+        # No need to consider "type" key because of patch_rope_scaling when
+        # loading HF config
+        rope_type = rope_scaling["rope_type"]
 
-        # The correct one should be "longrope", kept "su" here
-        # to be backward compatible
         if rope_type not in ("su", "longrope", "llama3"):
             if disable_sliding_window:
                 # TODO(robertgshaw): Find a model that supports rope_scaling
@@ -1740,11 +1758,10 @@ def _get_and_verify_max_len(
                     "with rope_scaling. Please raise an issue so we can "
                     "investigate.")
 
-            if rope_type == "mrope":
-                scaling_factor = 1
-            else:
-                assert "factor" in rope_scaling
-                scaling_factor = rope_scaling["factor"]
+            # NOTE: rope_type == "default" does not define factor
+            # https://github.com/huggingface/transformers/blob/v4.45.2/src/transformers/modeling_rope_utils.py
+            scaling_factor = rope_scaling.get("factor", 1.0)
+
             if rope_type == "yarn":
                 derived_max_model_len = rope_scaling[
                     "original_max_position_embeddings"]
@@ -1783,6 +1800,14 @@ def _get_and_verify_max_len(
                     f"{msg} To allow overriding this maximum, set "
                     "the env var VLLM_ALLOW_LONG_MAX_MODEL_LEN=1")
     return int(max_model_len)
+
+
+def get_min_sliding_window(
+        sliding_window: Union[int, List[Optional[int]]]) -> int:
+    if isinstance(sliding_window, list):
+        return min(s for s in sliding_window if s is not None)
+
+    return sliding_window
 
 
 def get_served_model_name(model: str,
