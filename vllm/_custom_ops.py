@@ -31,10 +31,11 @@ if TYPE_CHECKING:
     def register_fake(fn):
         return lambda name: fn
 else:
-    try:
-        from torch.library import register_fake
-    except ImportError:
-        from torch.library import impl_abstract as register_fake
+    pass
+    # try:
+    #     from torch.library import register_fake
+    # except ImportError:
+    #     from torch.library import impl_abstract as register_fake
 
 
 def hint_on_error(fn):
