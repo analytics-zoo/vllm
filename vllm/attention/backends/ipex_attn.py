@@ -131,6 +131,8 @@ class IpexAttnMetadata(AttentionMetadata, PagedAttentionMetadata):
         for i in range(num_queries):
             self.seq_lens[i] += 1
         self.max_decode_seq_len = max(self.seq_lens)
+        # import vllm._C.ops
+        # vllm._C.ops.advance_step_ipex(0,0,0,torch.empty(3), torch.empty(3), torch.empty(3), torch.empty(3), torch.empty(3), torch.empty(3))
 
 
 from torch.nn.functional import scaled_dot_product_attention

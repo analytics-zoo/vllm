@@ -32,6 +32,8 @@ try:
         lazliy initialized after Ray sets CUDA_VISIBLE_DEVICES."""
 
         def __init__(self, *args, **kwargs) -> None:
+            from ipex_llm.vllm.xpu.model_convert import _ipex_llm_convert
+            _ipex_llm_convert(load_in_low_bit="fp8")
             super().__init__(*args, **kwargs)
             # Since the compiled DAG runs a main execution
             # in a different thread that calls cuda.set_device.

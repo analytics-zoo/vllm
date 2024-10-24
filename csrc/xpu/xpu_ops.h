@@ -93,6 +93,15 @@ torch::Tensor marlin_gemm(
   TORCH_CHECK(false, "marlin_gemm is not supported on XPU.");                            
 }
 
+
+void advance_step_ipex(int num_seqs, int num_queries, int block_size,
+                            torch::Tensor& input_tokens,       // type: long
+                            torch::Tensor& sampled_token_ids,  // type: long
+                            torch::Tensor& input_positions,    // type: long
+                            torch::Tensor& seq_lens,           // type: int
+                            torch::Tensor& slot_mapping,       // type: long
+                            torch::Tensor& block_tables);
+
 torch::Tensor awq_dequantize(torch::Tensor _kernel, 
     torch::Tensor _scaling_factors,
     torch::Tensor _zeros,
