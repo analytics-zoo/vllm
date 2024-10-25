@@ -1268,8 +1268,9 @@ void advance_step_ipex(int num_seqs, int num_queries, int block_size,
                        torch::Tensor& block_tables) {
   // std::cout << "advance step ipex get called!!!!!!" << std::endl;
   sycl::queue& queue = vllm::xpu::vllmGetQueue();
-  int num_blocks = 32;
-  int num_threads = 128;
+  // TODO: we might want to adjust this value
+  int num_blocks = 1024;
+  int num_threads = 32;
   long* input_tokens_ptr = reinterpret_cast<long*>(input_tokens.data_ptr());
   long const* sampled_token_ids_ptr = reinterpret_cast<long const*>(sampled_token_ids.data_ptr());
   long* input_positions_ptr = reinterpret_cast<long*>(input_positions.data_ptr());
