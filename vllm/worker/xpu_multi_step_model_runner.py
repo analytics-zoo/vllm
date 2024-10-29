@@ -431,8 +431,6 @@ class XPUMultiStepModelRunner(XPUModelRunnerBase[XPUStatefulModelInput]):
 
         # Pythonize the output and block if needed since it is the last step
         if model_input.is_last_step:
-            # import pdb
-            # pdb.set_trace()
             outputs = self._final_process_outputs(model_input,
                                                   output_proc_callback)
             self.pythonization_cache.reset()
@@ -485,8 +483,9 @@ class XPUMultiStepModelRunner(XPUModelRunnerBase[XPUStatefulModelInput]):
         # cloned_slot_mappings = attn_metadata.slot_mapping.clone()
         # cloned_block_tables = attn_metadata.block_tables.clone()
 
-        import vllm._C.ops
-        vllm._C.ops.advance_step_ipex(num_seqs, num_queries, self.block_size, frozen_model_input.input_tokens, sampled_token_ids, frozen_model_input.input_positions, attn_metadata.seq_lens_tensor, attn_metadata.slot_mapping, attn_metadata.block_tables)
+        ############### New implementation ##############################
+        # import vllm._C.ops
+        # vllm._C.ops.advance_step_ipex(num_seqs, num_queries, self.block_size, frozen_model_input.input_tokens, sampled_token_ids, frozen_model_input.input_positions, attn_metadata.seq_lens_tensor, attn_metadata.slot_mapping, attn_metadata.block_tables)
         # torch.xpu.synchronize()
         # vllm._C.ops.advance_step_ipex(num_seqs, num_queries, self.block_size, cloned_input_tokens, cloned_sampled_token_ids, cloned_input_positions, cloned_seq_lens, cloned_slot_mappings, cloned_block_tables)
 

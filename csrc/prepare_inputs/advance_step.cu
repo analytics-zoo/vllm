@@ -19,12 +19,10 @@ __global__ void advance_step_flashattn_kernel(
     int64_t const block_tables_stride) {
   int num_query_blocks = div_ceil(num_queries, num_threads);
 
-  // We only need num_query_blocks in total...
   if (blockIdx.x >= num_query_blocks) {
     return;
   }
 
-  // For this thread, if cur_query_id >= num_queries, then done...
   int cur_query_id = blockIdx.x * num_threads + threadIdx.x;
 
   if (cur_query_id >= num_queries) {
@@ -32,7 +30,6 @@ __global__ void advance_step_flashattn_kernel(
   }
 
   // Update input_tokens
-  // Handle for this query
   input_tokens_ptr[cur_query_id] = sampled_token_ids_ptr[cur_query_id];
 
   int seq_len = seq_lens_ptr[cur_query_id];
@@ -184,8 +181,6 @@ void advance_step_flashattn(int num_seqs, int num_queries, int block_size,
   int blocks;
   cudaDeviceGetAttribute(&blocks, cudaDevAttrMultiProcessorCount, dev);
 
-  // Dimension is blocks, max_threads
-  // Get num available blocks...
   advance_step_flashattn_kernel<max_threads>
       <<<blocks, max_threads, 0, stream>>>(
           num_seqs, num_queries, block_size,
