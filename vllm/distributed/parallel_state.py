@@ -166,6 +166,7 @@ class GroupCoordinator:
         use_pynccl: bool,
         use_custom_allreduce: bool,
         use_tpu_communicator: bool,
+        use_xpu_communicator: bool,
         use_message_queue_broadcaster: bool = False,
         group_name: Optional[str] = None,
     ):
@@ -202,6 +203,7 @@ class GroupCoordinator:
         self.use_pynccl = use_pynccl
         self.use_custom_allreduce = use_custom_allreduce
         self.use_tpu_communicator = use_tpu_communicator
+        self.use_xpu_communicator = use_xpu_communicator
 
         # lazy import to avoid documentation build error
         from vllm.distributed.device_communicators.custom_all_reduce import (
@@ -229,6 +231,12 @@ class GroupCoordinator:
         self.tpu_communicator: Optional[TpuCommunicator] = None
         if use_tpu_communicator and self.world_size > 1:
             self.tpu_communicator = TpuCommunicator(group=self.cpu_group)
+
+        from vllm.distributed.device_communicators.xpu_communicator import (
+            XpuCommunicator)
+        self.xpu_communicator: Optional[XpuCommunicator]
+        if use_xpu_communicator and self.world_size > 1:
+            self.xpu_communicator = XpuCommunicator(group=self.device_group)
 
         from vllm.distributed.device_communicators.shm_broadcast import (
             MessageQueue)
@@ -345,6 +353,10 @@ class GroupCoordinator:
             # TPU handles Dynamo with its own logic.
             return self._all_reduce(input_)
 
+        if self.xpu_communicator is not None and \
+                not self.xpu_communicator.disabled:
+            return self.xpu_communicator.all_reduce(input_)
+
         if self.ca_comm is not None and self.ca_comm.should_custom_ar(input_):
             return torch.ops.vllm.outplace_all_reduce(
                 input_, group_name=self.unique_name)
@@ -433,6 +445,10 @@ class GroupCoordinator:
         if dim < 0:
             # Convert negative dim to positive.
             dim += input_.dim()
+        if self.xpu_communicator is not None and \
+                not self.xpu_communicator.disabled:
+            return self.xpu_communicator.gather(input_, self.rank_in_group,
+                                                dst, dim)
         # Allocate output tensor.
         if self.rank_in_group == dst:
             gather_list = [torch.empty_like(input_) for _ in range(world_size)]
@@ -847,6 +863,7 @@ def init_world_group(ranks: List[int], local_rank: int,
         use_pynccl=False,
         use_custom_allreduce=False,
         use_tpu_communicator=False,
+        use_xpu_communicator=False,
         group_name="world",
     )
 
@@ -868,6 +885,7 @@ def init_model_parallel_group(
         use_pynccl=True,
         use_custom_allreduce=use_custom_allreduce,
         use_tpu_communicator=True,
+        use_xpu_communicator=True,
         use_message_queue_broadcaster=use_message_queue_broadcaster,
         group_name=group_name,
     )
