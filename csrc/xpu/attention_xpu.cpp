@@ -676,7 +676,7 @@ void paged_attention_v1_kernel(
               red_smem_acc_ct1.get_pointer());                              \
         });                                                                 \
   });                                                                       \
-  ::xpu::profiler_record("paged attn v2", event);
+  ::xpu::profiler_record("paged attn v1", event);
 
 template <typename T, int BLOCK_SIZE, int NUM_THREADS = 512>
 void paged_attention_xpu_v1_impl_launcher(
