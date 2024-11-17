@@ -361,8 +361,18 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     start = end
                     bsz_idx = bsz_idx + 1
                 
-                import xe_addons
-                tmp_output = xe_addons.sdp_causal(tmp_query, tmp_key, tmp_value, tmp_mask)
+                if use_sdp_causal(self.head_size, query):
+                    import xe_addons
+                    tmp_output = xe_addons.sdp_causal(tmp_query, tmp_key, tmp_value, tmp_mask)
+                else:
+                    tmp_output = torch.nn.functional.scaled_dot_product_attention(
+                        tmp_query,
+                        tmp_key,
+                        tmp_value,
+                        attn_mask=tmp_mask,
+                        dropout_p=0.0,
+                        is_causal=not self.need_mask,
+                        scale=self.scale)
 
                 start = 0
                 bsz_idx = 0
