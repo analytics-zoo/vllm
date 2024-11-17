@@ -1273,7 +1273,6 @@ torch::Tensor prepare_mask(
 
         mask = torch::log(mask);
 
-        // 将结果复制到 attn_biases 的适当位置
         attn_biases.index_put_({i, 0, torch::indexing::Slice(max_seq_len - seq_len, max_seq_len), torch::indexing::Slice(max_seq_len - seq_len, max_seq_len)}, mask);
     }
 
