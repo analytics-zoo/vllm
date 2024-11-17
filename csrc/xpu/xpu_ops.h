@@ -122,3 +122,8 @@ void gptq_shuffle(
   int bit) {
   TORCH_CHECK(false, "gptq_shuffle is not supported on XPU.");
 }
+
+torch::Tensor prepare_mask(
+  const torch::Tensor& query,
+  const std::vector<int>& seq_lens
+);

@@ -6,6 +6,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // vLLM custom ops
   pybind11::module ops = m.def_submodule("ops", "vLLM custom operators");
 
+  ops.def(
+    "prepare_mask",
+    &prepare_mask,
+    "prepare_mask");
+
   // Attention ops
   ops.def(
     "paged_attention_v1",

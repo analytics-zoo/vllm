@@ -300,8 +300,9 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                             attn_metadata.seq_lens, self.sliding_window,
                             query.dtype)  # type: ignore
                     else:
-                        att_masks = _make_sliding_window_bias(
-                            attn_metadata.seq_lens, None, dtype=query.dtype)
+                        # att_masks = _make_sliding_window_bias(
+                        #     attn_metadata.seq_lens, None, dtype=query.dtype)
+                        att_masks = [None] * len(attn_metadata.seq_lens)
                     attn_metadata.attn_bias = att_masks
 
                 # output = torch.empty(
@@ -342,10 +343,12 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                 tmp_value = torch.zeros(
                             (batch_size, self.num_heads, max_seq_len, self.head_size),
                             dtype=query.dtype, device=query.device)
-                tmp_mask = torch.empty(
-                            (batch_size, 1, max_seq_len, max_seq_len),
-                            dtype=query.dtype, device=query.device)
-                tmp_mask.fill_(-torch.inf)
+                # tmp_mask = torch.empty(
+                #             (batch_size, 1, max_seq_len, max_seq_len),
+                #             dtype=query.dtype, device=query.device)
+                # tmp_mask.fill_(-torch.inf)
+                tmp_mask = ipex_ops.prepare_mask(query, attn_metadata.seq_lens)
+                # tmp_mask = None
                 start = 0
                 bsz_idx = 0
                 for seq_len, mask in zip(attn_metadata.seq_lens,
@@ -354,7 +357,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     tmp_query[bsz_idx, :, -seq_len:, :] = query[None, :, start:end, :]
                     tmp_key[bsz_idx, :, -seq_len:, :] = key[None, :, start:end, :]
                     tmp_value[bsz_idx, :, -seq_len:, :] = value[None, :, start:end, :]
-                    tmp_mask[bsz_idx, :, -seq_len:, -seq_len:] = mask
+                    # tmp_mask[bsz_idx, :, -seq_len:, -seq_len:] = mask
                     start = end
                     bsz_idx = bsz_idx + 1
                 

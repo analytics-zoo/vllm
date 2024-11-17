@@ -1255,3 +1255,27 @@ void paged_attention_v2(
         CALL_V2_LAUNCHER_BLOCK_SIZE(scalar_t);
       });
 }
+
+torch::Tensor prepare_mask(
+    const torch::Tensor& query,
+    const std::vector<int>& seq_lens
+) {
+    int bsz = seq_lens.size();
+    int max_seq_len = *std::max_element(seq_lens.begin(), seq_lens.end());
+    constexpr float fmin = -10000.0;
+
+    torch::Tensor attn_biases = torch::full({bsz, 1, max_seq_len, max_seq_len}, fmin, torch::device(query.device()).dtype(query.dtype()));
+
+    for (int i = 0; i < bsz; ++i) {
+        int seq_len = seq_lens[i];
+        torch::Tensor mask = torch::full({1, seq_len, seq_len}, 1.0, torch::device(query.device()).dtype(query.dtype()));
+        mask = torch::tril(mask);
+
+        mask = torch::log(mask);
+
+        // 将结果复制到 attn_biases 的适当位置
+        attn_biases.index_put_({i, 0, torch::indexing::Slice(max_seq_len - seq_len, max_seq_len), torch::indexing::Slice(max_seq_len - seq_len, max_seq_len)}, mask);
+    }
+
+    return attn_biases;
+}

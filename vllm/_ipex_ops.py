@@ -266,3 +266,9 @@ class ipex_ops:
                     block_mapping) -> None:
         # torch.xpu.swap_blocks(src, dst, block_mapping)  # type: ignore
         vllm._C.cache_ops.swap_blocks(key_caches, value_caches, block_mapping)
+
+    @staticmethod
+    def prepare_mask(query: torch.Tensor, seq_lens: List[int]):
+        # torch.xpu.swap_blocks(src, dst, block_mapping)  # type: ignore
+        mask = vllm._C.ops.prepare_mask(query, seq_lens)
+        return mask
