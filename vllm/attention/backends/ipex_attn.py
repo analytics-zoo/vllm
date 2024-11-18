@@ -331,7 +331,6 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                 key = key.movedim(0, key.dim() - 2)
                 value = value.movedim(0, value.dim() - 2)
 
-                # for 1k-512 test
                 max_seq_len = max(attn_metadata.seq_lens)
                 batch_size = len(attn_metadata.seq_lens)
                 tmp_query = torch.zeros(
