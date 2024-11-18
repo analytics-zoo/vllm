@@ -352,7 +352,6 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     tmp_query[bsz_idx, :, -seq_len:, :] = query[None, :, start:end, :]
                     tmp_key[bsz_idx, :, -seq_len:, :] = key[None, :, start:end, :]
                     tmp_value[bsz_idx, :, -seq_len:, :] = value[None, :, start:end, :]
-                    # tmp_mask[bsz_idx, :, -seq_len:, -seq_len:] = mask
                     start = end
                     bsz_idx = bsz_idx + 1
                 
