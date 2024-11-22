@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union, Mapping
 
 import torch
@@ -26,6 +27,7 @@ from vllm.worker.model_runner_base import (
     _add_sampling_metadata_broadcastable_dict,
     _init_attn_metadata_from_tensor_dict,
     _init_sampling_metadata_from_tensor_dict)
+from vllm.attention.backends.utils import is_block_tables_empty
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionBackend
@@ -237,35 +239,207 @@ class XPUModelRunner(ModelRunnerBase[ModelInputForXPU]):
             virtual_engine: int = 0,
             finished_requests_ids: Optional[List[str]] = None
     ) -> ModelInputForXPU:
-        multi_modal_kwargs = None
-        # NOTE: We assume that all sequences in the group are all prompts or
-        # all decodes.
-        is_prompt = seq_group_metadata_list[0].is_prompt
-        # Prepare input tensors.
-        if is_prompt:
-            (input_tokens, input_positions, attn_metadata, seq_lens,
-             multi_modal_kwargs
-             ) = self._prepare_prompt(seq_group_metadata_list)
-        else:
-            (input_tokens, input_positions,
-             attn_metadata) = self._prepare_decode(seq_group_metadata_list)
-            seq_lens = []
+        input_tokens: List[int] = []
+        input_positions: List[int] = []
+        slot_mapping: List[int] = []
+
+        seq_lens: List[int] = []
+        # Prefill's seq_len: query_length + chunked_prefill length
+        prefill_seq_lens: List[int] = []
+        decode_seq_lens: List[int] = []
+        context_lens: List[int] = []
+        query_lens: List[int] = []
+        # One for each sequence, physical blocks
+        block_tables: List[List[int]] = []
+
+        num_prefills = 0
+        num_prefill_tokens = 0
+        num_decode_tokens = 0
+
+        if len(seq_group_metadata_list) == 0:
+            return None
+
+        assert self.sliding_window is None, "TODO: support sliding window later"
+
+        for seq_group_metadata in seq_group_metadata_list:
+            seq_ids = list(seq_group_metadata.seq_data.keys())
+            # is_prompt indicates that it is still in prompt states
+            # TODO: remove this is_prompt
+            is_prompt = seq_group_metadata.is_prompt
+
+            # Iterate over all the seqs in the seq_group
+            for seq_id in seq_ids:
+                # Check for prefix caching
+                computed_block_nums = seq_group_metadata.computed_block_nums
+                if (self.scheduler_config is not None
+                    and self.scheduler_config.chunked_prefill_enabled
+                    and not (computed_block_nums is None or computed_block_nums == [])):
+                    raise RuntimeError("chunked prefill cannot be used with prefix caching")
+                seq_data = seq_group_metadata.seq_data[seq_id]
+                # Context_len: how many tokens that have been computed
+                if is_prompt:
+                    context_len = seq_data.get_num_computed_tokens()
+                else:
+                    context_len = seq_data.get_len() - 1
+
+                # Get tokens for this sequence
+                # For prefill, the seq_len will be the second one.
+                # For decoding, the seq_len will be the first one.
+                seq_len = min(seq_data.get_len(), context_len + seq_group_metadata.token_chunk_size)
+
+                if is_prompt:
+                    tokens = seq_data.get_token_ids()[context_len: seq_len]
+                else:
+                    # Last token
+                    tokens = [seq_data.get_last_token_id()]
+
+                # FIXME: add prefix caching
+                if (self.scheduler_config.chunked_prefill_enabled or not is_prompt):
+                    # Chunked prefill or decoding
+                    # For chunked prefill, the block tables may not be None
+                    if seq_group_metadata.block_tables is not None:
+                        block_table = seq_group_metadata.block_tables[seq_id]
+                    else:
+                        block_table = []
+                else:
+                    # Prefill without chunked prefill
+                    block_table = []
+                block_tables.append(block_table)
+                # Total seq_lens
+                seq_lens.append(seq_len)
+                context_lens.append(context_len)
+                query_len = seq_len - context_len
+                query_lens.append(query_len)
+                input_tokens.extend(tokens)
+                input_positions.extend(list(range(context_len, seq_len)))
+                if is_prompt:
+                    assert len(seq_ids) == 1
+                    num_prefills += 1
+                    num_prefill_tokens += len(tokens)
+                    prefill_seq_lens.append(seq_len)
+                else:
+                    assert query_len == 1, "Wrong query length in decoding"
+                    num_decode_tokens += 1
+                    decode_seq_lens.append(seq_len)
+                if is_block_tables_empty(seq_group_metadata.block_tables):
+                    slot_mapping.extend([_PAD_SLOT_ID] * seq_len)
+                    continue
+                # seq_id: List[int]
+                block_table = seq_group_metadata.block_tables[seq_id]
+
+                # TODO: add sliding window
+                for i in range(context_len, seq_len):
+                    # if i < start_idx:
+                    #     slot_mapping.append(_PAD_SLOT_ID)
+                    #     continue
+                    block_number = block_table[i // self.block_size]
+                    block_offset = i % self.block_size
+                    # slot_mapping is when we flatteren the blocks, and see which block it is located
+                    # block_table is a logical -> to physical transition...
+                    # i // block_size is the logical block number
+                    slot_mapping.append(block_number * self.block_size + block_offset)
+        max_query_len = max(query_lens)
+        max_decode_seq_len = max(decode_seq_lens, default=0)
+
+        max_block_table_len = max(
+            len(block_table) for block_table in block_tables)
+        block_tables = make_tensor_with_pad(
+            block_tables,
+            max_len=max_block_table_len,
+            pad=0,
+            dtype=torch.int,
+            device=self.device,
+        )
+        assert max_query_len > 0, ("query_lens: {}".format(query_lens))
+        seq_lens_tensor = torch.tensor(seq_lens,
+                                       dtype=torch.int,
+                                       device=self.device)
+
+        # What is the usage of this seq_start_loc?
+        seq_start_loc = torch.zeros(seq_lens_tensor.shape[0] + 1,
+                                    dtype=torch.int32,
+                                    device=self.device)
+
+        # (batch_size + 1,). The cumulative sequence lengths of the sequences in
+        # the batch, used to index into sequence. E.g., if the sequence length is
+        # [4, 6], it is [0, 4, 10].
+        torch.cumsum(seq_lens_tensor,
+                     dim=0,
+                     dtype=seq_start_loc.dtype,
+                     out=seq_start_loc[1:])
+        input_tokens_tensor = torch.tensor(input_tokens,
+                                           dtype=torch.long,
+                                           device=self.device)
+        input_positions_tensor = torch.tensor(input_positions,
+                                              dtype=torch.long,
+                                              device=self.device)
+        slot_mapping_tensor = torch.tensor(slot_mapping,
+                                           dtype=torch.long,
+                                           device=self.device)
+
+        context_lens_tensor = torch.tensor(context_lens,
+                                           dtype=torch.int,
+                                           device=self.device)
+        query_lens_tensor = torch.tensor(query_lens,
+                                         dtype=torch.long,
+                                         device=self.device)
+        seq_lens_tensor = torch.tensor(seq_lens,
+                                       dtype=torch.int,
+                                       device=self.device)
+
+        query_start_loc = torch.zeros(query_lens_tensor.shape[0] + 1,
+                                      dtype=torch.int32,
+                                      device=self.device)
+
+        torch.cumsum(query_lens_tensor,
+                     dim=0,
+                     dtype=query_start_loc.dtype,
+                     out=query_start_loc[1:])
+
+        tmp = [0]
+        tmp.extend(seq_lens)
+        seqlen = torch.tensor(tmp)
+        seqlen_q = torch.cumsum(seqlen, dim=0).to(device=self.device)
+
+        # Generate attn_metadata
+        is_prompt = (seq_group_metadata_list[0].is_prompt
+                if seq_group_metadata_list else None)
+        attn_metadata = self.attn_backend.make_metadata(
+            # FIXME: Later maybe we can get rid of this parameter
+            is_prompt=is_prompt, #1
+            num_prefills=num_prefills, # 6
+            slot_mapping=slot_mapping_tensor, # 2
+            num_prefill_tokens=num_prefill_tokens, # 7
+            num_decode_tokens=num_decode_tokens, # 8
+            seq_lens=seq_lens_tensor, # 3
+            seqlen_q=seqlen_q, # 4
+            # max_seqlen=max_seqlen, # 5
+            max_seqlen=max(query_lens),
+            seq_lens_tensor=seq_lens_tensor, # 9
+            # max_query_len=max_query_len,
+            max_decode_seq_len=max_decode_seq_len, # 10
+            query_start_loc=query_start_loc,
+            # seq_start_loc=seq_start_loc,
+            context_lens=context_lens_tensor,
+            block_tables=block_tables if (self.scheduler_config.chunked_prefill_enabled or not is_prompt) else torch.tensor([], device=self.device, dtype=torch.int) # 11
+        )
         sampling_metadata = SamplingMetadata.prepare(
             seq_group_metadata_list,
             seq_lens,
             # subquery_lens is not needed if chunked prefill is not
             # supported. Since CPU worker doesn't support chunked prefill
             # just use seq_lens instead.
-            seq_lens,
+            query_lens,
             self.device,
             pin_memory=False)
-
-        return ModelInputForXPU(input_tokens=input_tokens,
-                                input_positions=input_positions,
-                                attn_metadata=attn_metadata,
-                                sampling_metadata=sampling_metadata,
-                                multi_modal_kwargs=multi_modal_kwargs,
-                                virtual_engine=virtual_engine)
+        return ModelInputForXPU(
+            input_tokens=input_tokens_tensor,
+            input_positions=input_positions_tensor,
+            attn_metadata=attn_metadata,
+            sampling_metadata=sampling_metadata,
+            multi_modal_kwargs=None,
+            virtual_engine=virtual_engine
+        )
 
     def _prepare_decode(
         self,
