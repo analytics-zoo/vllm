@@ -649,7 +649,7 @@ void paged_attention_v1_kernel(
                                                                             \
     cgh.parallel_for(                                                       \
         sycl::nd_range<3>(grid * block, block),                             \
-        [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(32)]] { \
+        [=](sycl::nd_item<3> item_ct1) { \
           paged_attention_v1_kernel<                                        \
               sycl_t,                                                       \
               Q_Vec,                                                        \
@@ -678,7 +678,7 @@ void paged_attention_v1_kernel(
   });                                                                       \
   ::xpu::profiler_record("paged attn v1", event);
 
-template <typename T, int BLOCK_SIZE, int NUM_THREADS = 512>
+template <typename T, int BLOCK_SIZE, int NUM_THREADS = 128>
 void paged_attention_xpu_v1_impl_launcher(
     torch::Tensor& out,
     torch::Tensor& query,
@@ -1026,7 +1026,7 @@ void paged_attention_v2_kernel(
                                                                             \
     cgh.parallel_for(                                                       \
         sycl::nd_range<3>(grid * block, block),                             \
-        [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(32)]] { \
+        [=](sycl::nd_item<3> item_ct1) { \
           vllm::paged_attention_v2_kernel<                                  \
               sycl_t,                                                       \
               Q_Vec,                                                        \
@@ -1072,7 +1072,7 @@ void paged_attention_v2_kernel(
                                                                             \
     cgh.parallel_for(                                                       \
         sycl::nd_range<3>(reduce_grid * block, block),                      \
-        [=](sycl::nd_item<3> item_ct1) [[intel::reqd_sub_group_size(32)]] { \
+        [=](sycl::nd_item<3> item_ct1)  { \
           vllm::paged_attention_v2_reduce_kernel<                           \
               sycl_t,                                                       \
               HEAD_SIZE,                                                    \
@@ -1094,7 +1094,7 @@ void paged_attention_v2_kernel(
 template <
     typename T,
     int BLOCK_SIZE,
-    int NUM_THREADS = 512,
+    int NUM_THREADS = 256,
     int PARTITION_SIZE = 512>
 void paged_attention_v2_launcher(
     torch::Tensor& out,
