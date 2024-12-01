@@ -472,9 +472,25 @@ class XPUMultiStepModelRunner(XPUModelRunnerBase[XPUStatefulModelInput]):
 
         attn_metadata = frozen_model_input.attn_metadata
         assert isinstance(attn_metadata, IpexAttnMetadata)
+        # Add one to self.seq_lens
         attn_metadata.advance_step(num_seqs, num_queries)
+        sampled_token_ids = model_input.cached_outputs[-1].sampled_token_ids
+
+        # cloned_input_tokens = frozen_model_input.input_tokens.clone()
+        # cloned_sampled_token_ids = sampled_token_ids.clone()
+        # cloned_input_positions = frozen_model_input.input_positions.clone()
+        # cloned_seq_lens = attn_metadata.seq_lens_tensor.clone()
+        # cloned_slot_mappings = attn_metadata.slot_mapping.clone()
+        # cloned_block_tables = attn_metadata.block_tables.clone()
+
+        ############### New implementation ##############################
+        # import vllm._C.ops
+        # vllm._C.ops.advance_step_ipex(num_seqs, num_queries, self.block_size, frozen_model_input.input_tokens, sampled_token_ids, frozen_model_input.input_positions, attn_metadata.seq_lens_tensor, attn_metadata.slot_mapping, attn_metadata.block_tables)
+        # torch.xpu.synchronize()
+        # vllm._C.ops.advance_step_ipex(num_seqs, num_queries, self.block_size, cloned_input_tokens, cloned_sampled_token_ids, cloned_input_positions, cloned_seq_lens, cloned_slot_mappings, cloned_block_tables)
 
         # refer ops.advance_step()
+        ##################### Original implementation ###################
         next_seq_len = attn_metadata.seq_lens_tensor + 1
         next_input_pos = next_seq_len - 1
         attn_metadata.seq_lens_tensor = next_seq_len
@@ -486,7 +502,6 @@ class XPUMultiStepModelRunner(XPUModelRunnerBase[XPUStatefulModelInput]):
         attn_metadata.slot_mapping = slot_num.to(dtype=torch.long)
 
         tmp_input_tokens = frozen_model_input.input_tokens
-        sampled_token_ids = model_input.cached_outputs[-1].sampled_token_ids
         if sampled_token_ids.dim() > 1 and sampled_token_ids.size(-1) == 1:
             sampled_token_ids = sampled_token_ids.squeeze(-1)
         tmp_input_tokens[:num_queries] = sampled_token_ids[:num_queries]
@@ -498,6 +513,7 @@ class XPUMultiStepModelRunner(XPUModelRunnerBase[XPUStatefulModelInput]):
             input_positions=tmp_input_positions,
         )
 
+        # Reset seq_lens
         if frozen_model_input.seq_lens is not None:
             tmp_seq_lens = frozen_model_input.seq_lens
             tmp_seq_lens[:num_queries] = attn_metadata.seq_lens[:num_queries]
@@ -505,6 +521,12 @@ class XPUMultiStepModelRunner(XPUModelRunnerBase[XPUStatefulModelInput]):
                 frozen_model_input,
                 seq_lens=tmp_seq_lens,
             )
+        # assert torch.equal(frozen_model_input.input_tokens, cloned_input_tokens)
+        # assert torch.equal(frozen_model_input.input_positions, cloned_input_positions)
+        # assert torch.equal(attn_metadata.slot_mapping, cloned_slot_mappings)
+        # assert torch.equal(attn_metadata.seq_lens_tensor, cloned_seq_lens)
+
+        # print("All checked passed")
 
         return model_input
 

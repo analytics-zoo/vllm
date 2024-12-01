@@ -69,6 +69,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "reshape_and_cache",
     &reshape_and_cache,
     "Reshape the key and value tensors and cache them");
+  
+  ops.def(
+    "advance_step_ipex",
+    &advance_step_ipex,
+    "Advance steps function used in multi-steps scheduler"
+  );
 
   // Quant
   ops.def(

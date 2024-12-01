@@ -1255,3 +1255,70 @@ void paged_attention_v2(
         CALL_V2_LAUNCHER_BLOCK_SIZE(scalar_t);
       });
 }
+
+
+constexpr int div_ceil(int a, int b) { return (a + b - 1) / b; }
+
+void advance_step_ipex(int num_seqs, int num_queries, int block_size,
+                       torch::Tensor& input_tokens,       // type: long
+                       torch::Tensor& sampled_token_ids,  // type: long
+                       torch::Tensor& input_positions,    // type: long
+                       torch::Tensor& seq_lens,           // type: int
+                       torch::Tensor& slot_mapping,       // type: long
+                       torch::Tensor& block_tables) {
+  // std::cout << "advance step ipex get called!!!!!!" << std::endl;
+  sycl::queue& queue = vllm::xpu::vllmGetQueue();
+  // TODO: we might want to adjust this value
+  int num_blocks = 1024;
+  int num_threads = 32;
+  long* input_tokens_ptr = reinterpret_cast<long*>(input_tokens.data_ptr());
+  long const* sampled_token_ids_ptr = reinterpret_cast<long const*>(sampled_token_ids.data_ptr());
+  long* input_positions_ptr = reinterpret_cast<long*>(input_positions.data_ptr());
+  int* seq_lens_ptr = reinterpret_cast<int*>(seq_lens.data_ptr());
+  long* slot_mapping_ptr = reinterpret_cast<long*>(slot_mapping.data_ptr());
+  int const* block_tables_ptr = reinterpret_cast<int const*>(block_tables.data_ptr());
+  int64_t const block_tables_stride = block_tables.stride(0);
+  sycl::range<1> grid(num_blocks);
+  sycl::range<1> block(num_threads);
+  queue.submit([&](sycl::handler & cgh){
+    cgh.parallel_for(
+      sycl::nd_range<1>(grid * block, block),
+      [=](sycl::nd_item<1> item_ct1){
+        //constexpr int div_ceil(int a, int b) { return (a + b - 1) / b; }
+        int num_query_blocks = div_ceil(num_queries, num_threads);
+
+        int group = item_ct1.get_group(0);
+
+        if (group >= num_query_blocks) {
+          return;
+        }
+
+        int cur_query_id = group * num_threads + item_ct1.get_local_id(0);
+
+        if (cur_query_id >= num_queries) {
+          return;
+        }
+
+        input_tokens_ptr[cur_query_id] = sampled_token_ids_ptr[cur_query_id];
+        int seq_len = seq_lens_ptr[cur_query_id];
+        int next_seq_len = seq_len + 1;
+        int next_input_pos = next_seq_len - 1;
+
+        // Update seq_lens
+        seq_lens_ptr[cur_query_id] = next_seq_len;
+        // Update input_positions
+        input_positions_ptr[cur_query_id] = next_input_pos;
+
+        int const* seq_block_tables_ptr =
+            block_tables_ptr + block_tables_stride * cur_query_id;
+        int block_index = next_input_pos / block_size;
+        int block_offset = next_input_pos % block_size;
+
+        int slot_num =
+            seq_block_tables_ptr[block_index] * block_size + block_offset;
+        // Update slot_mapping
+        slot_mapping_ptr[cur_query_id] = slot_num;
+      }
+    );
+  });
+}
