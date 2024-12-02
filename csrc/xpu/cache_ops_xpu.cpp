@@ -47,14 +47,22 @@ void reshape_and_cache_kernel(
     const int x_idx = head_offset / x;
     const int x_offset = head_offset % x;
 
-    const int64_t tgt_key_idx =
-        block_idx * num_heads * (head_size / x) * block_size * x +
-        head_idx * (head_size / x) * block_size * x + x_idx * block_size * x +
-        block_offset * x + x_offset;
+    // const int64_t tgt_key_idx =
+    //     block_idx * num_heads * (head_size / x) * block_size * x +
+    //     head_idx * (head_size / x) * block_size * x + x_idx * block_size * x +
+    //     block_offset * x + x_offset;
+
     const int64_t tgt_value_idx =
         block_idx * num_heads * head_size * block_size +
         head_idx * head_size * block_size + head_offset * block_size +
         block_offset;
+
+    // const int64_t tgt_value_idx =
+    //     block_idx * num_heads * head_size * block_size +
+    //     head_idx * head_size * block_size + 
+    //     block_offset * head_size + 
+    //     head_offset;
+    const int64_t tgt_key_idx = tgt_value_idx;
     key_cache[tgt_key_idx] = key[src_key_idx];
     value_cache[tgt_value_idx] = value[src_value_idx];
   }
@@ -110,7 +118,8 @@ void reshape_and_cache(
   int num_heads = key.size(1);
   int head_size = key.size(2);
   int block_size = key_cache.size(3);
-  int x = key_cache.size(4);
+  // int x = key_cache.size(4);
+  int x = 1;
 
   int key_stride = key.stride(0);
   int value_stride = value.stride(0);
@@ -295,13 +304,20 @@ void gather_cached_kv_kernel(
         head_offset / x; // the offset of the [head_size/x] dimension
     const int x_offset = head_offset % x;
 
-    const int src_key_idx =
-        block_idx * num_heads * (head_size / x) * block_size * x +
-        head_idx * (head_size / x) * block_size * x + x_idx * block_size * x +
-        block_offset * x + x_offset;
+    // const int src_key_idx =
+    //     block_idx * num_heads * (head_size / x) * block_size * x +
+    //     head_idx * (head_size / x) * block_size * x + x_idx * block_size * x +
+    //     block_offset * x + x_offset;
     const int src_value_idx = block_idx * num_heads * head_size * block_size +
         head_idx * head_size * block_size + head_offset * block_size +
         block_offset;
+
+    // const int src_value_idx = 
+    //     block_idx * num_heads * head_size * block_size + 
+    //     head_idx * head_size * block_size + 
+    //     block_offset * head_size + 
+    //     head_offset;
+    const int src_key_idx = src_value_idx;
 
     key[tgt_key_idx] = VLLM_LDG(&key_cache[src_key_idx]);
     value[tgt_value_idx] = VLLM_LDG(&value_cache[src_value_idx]);
@@ -356,13 +372,20 @@ void gather_cached_kv_kernel_optimized(
       const int x_idx = head_offset / x;
       const int x_offset = head_offset % x;
 
-      const int src_key_idx =
-          block_idx * num_heads * (head_size / x) * block_size * x +
-          head_idx * (head_size / x) * block_size * x + x_idx * block_size * x +
-          block_offset * x + x_offset;
+      // const int src_key_idx =
+      //     block_idx * num_heads * (head_size / x) * block_size * x +
+      //     head_idx * (head_size / x) * block_size * x + x_idx * block_size * x +
+      //     block_offset * x + x_offset;
+
       const int src_value_idx = block_idx * num_heads * head_size * block_size +
           head_idx * head_size * block_size + head_offset * block_size +
           block_offset;
+      // const int src_value_idx = 
+      //   block_idx * num_heads * head_size * block_size + 
+      //   head_idx * head_size * block_size + 
+      //   block_offset * head_size + 
+      //   head_offset;
+      const int src_key_idx = src_value_idx;
 
       tgt_key_indices[j] = tgt_key_idx;
       tgt_value_indices[j] = tgt_value_idx;

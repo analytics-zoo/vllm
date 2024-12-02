@@ -278,8 +278,10 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         num_blocks = kv_cache.shape[1]
 
         key_cache = kv_cache[0]
-        key_cache = key_cache.view(num_blocks, num_kv_heads, head_size // x,
-                                   -1, x)
+        # TODO(xiangyu): refine here
+        # key_cache = key_cache.view(num_blocks, num_kv_heads, head_size // x,
+        #                            -1, x)
+        key_cache = key_cache.view(num_blocks, num_kv_heads, head_size, -1)
         value_cache = kv_cache[1]
         value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
         return key_cache, value_cache
@@ -474,10 +476,10 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                 self.num_kv_heads,
                 self.scale,
                 decode_meta.block_tables,
-                decode_context_lens,
+                decode_meta.seq_lens_tensor,
                 block_size,
                 head_size,
-                max_context_len
+                max_seq_len
             )
             # use_v1 = (max_seq_len <= 8192 and
             #           (max_num_partitions == 1 or num_seqs * num_heads > 512))

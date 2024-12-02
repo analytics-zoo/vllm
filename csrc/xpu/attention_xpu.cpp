@@ -2248,8 +2248,10 @@ void gqa_1_kernel(
     const int64_t query_head_stride,
     const int64_t key_token_stride,
     const int64_t key_head_stride,
+    const int64_t key_block_stride,
     const int64_t value_token_stride,
     const int64_t value_head_stride,
+    const int64_t value_block_stride,
     const int64_t block_table_stride_batch,
     const int64_t o_a_s_bsz_stride,
     const int64_t o_a_s_head_stride,
@@ -2319,8 +2321,14 @@ void gqa_1_kernel(
                     const IT * key_head = (const IT *)key + physical_block_number * key_token_stride +
                       kv_head_idx * key_head_stride +
                       which_slot;
-                    simd<IT, HD> key_row = block_load<IT, HD>(key_head);
-                    slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), key_row);
+                    for (int i = 0; i < HD; i++) {
+                      IT temp_key = key_head[i * value_block_stride];
+                      slm_scalar_store<IT>((r - vid * VS) * HD * sizeof(IT) +
+                                                    i * sizeof(IT),
+                                                temp_key);
+                    }
+                    // simd<IT, HD> key_row = block_load<IT, HD>(key_head);
+                    // slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), key_row);
                 }
                 barrier();
 
@@ -2346,8 +2354,15 @@ void gqa_1_kernel(
                     const IT * value_head = (const IT *)value + physical_block_number * value_token_stride +
                       kv_head_idx * value_head_stride +
                       which_slot;
-                    simd<IT, HD> value_row = block_load<IT, HD>(value_head + r * HD);
-                    slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), value_row);
+
+                    for (int i = 0; i < HD; i++) {
+                      IT temp_value = value_head[i * value_block_stride];
+                      slm_scalar_store<IT>((r - vid * VS) * HD * sizeof(IT) +
+                                                    i * sizeof(IT),
+                                                temp_value);
+                    }
+                    // simd<IT, HD> value_row = block_load<IT, HD>(value_head);
+                    // slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), value_row);
                 }
                 barrier();
 
@@ -2514,8 +2529,8 @@ void paged_attention_gqa(
     func1(
         query.data_ptr(), key_cache.data_ptr(), value_cache.data_ptr(),
         block_tables.data_ptr(), context_lens.data_ptr(), o_a_s.data_ptr(), o_accs.data_ptr(),
-        query.stride(0), query.stride(1), key_cache.stride(0), key_cache.stride(1),
-        value_cache.stride(0), value_cache.stride(1), block_tables.stride(0),
+        query.stride(0), query.stride(1), key_cache.stride(0), key_cache.stride(1), key_cache.stride(2),
+        value_cache.stride(0), value_cache.stride(1), value_cache.stride(2), block_tables.stride(0),
         o_a_s.stride(0), o_a_s.stride(1), o_accs.stride(0), o_accs.stride(1),
         scale, block_size, bsz, num_heads, num_kv_heads, row_block_num,
         query.device()
