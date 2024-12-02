@@ -2237,31 +2237,30 @@ torch::Tensor context_attention_forward_v1(
 
 template<typename IT, const int VS, const int HD>
 void gqa_1_kernel(
-    const void * query,
-    const void * key,
-    const void * value,
-    const void* block_tables,
-    const void* context_lens,
-    const int block_size,
-    const int x,
+    const void * query, // [num_seqs, num_heads, head_size]
+    const void * key,   // [num_blocks, num_kv_heads, head_size, block_size]
+    const void * value, // [num_blocks, num_kv_heads, head_size, block_size]
+    const void* block_tables, // [num_seqs, max_num_blocks_per_seq]
+    const void* context_lens, // [num_seqs]
     void * o_a_s,
     void * o_accs,
     const int64_t query_bsz_stride,
     const int64_t query_head_stride,
-    const int64_t query_seq_stride,
-    const int64_t key_bsz_stride,
+    const int64_t key_token_stride,
     const int64_t key_head_stride,
-    const int64_t value_bsz_stride,
+    const int64_t value_token_stride,
     const int64_t value_head_stride,
     const int64_t o_a_s_bsz_stride,
     const int64_t o_a_s_head_stride,
     const int64_t o_accs_bsz_stride,
     const int64_t o_accs_head_stride,
+    const float scale,
+    const int block_size,
     const int bsz,
     const int num_heads,
     const int num_kv_heads,
-    const int seq_length,
-    const int context_length,
+    // const int seq_length,
+    // const int context_length,
     const int block_num,
     const at::Device & device
 ) {
@@ -2288,14 +2287,18 @@ void gqa_1_kernel(
 
                 const IT * query_head = (const IT *)query + bsz_idx * query_bsz_stride
                                                           + head_idx * query_head_stride;
-                const IT * key_head = (const IT *)key + bsz_idx * key_bsz_stride
-                                                      + kv_head_idx * key_head_stride;
-                const IT * value_head = (const IT *)value + bsz_idx * value_bsz_stride
-                                                          + kv_head_idx * value_head_stride;
+                // const IT * key_head = (const IT *)key + bsz_idx * key_bsz_stride
+                //                                       + kv_head_idx * key_head_stride;
+                // const IT * value_head = (const IT *)value + bsz_idx * value_bsz_stride
+                //                                           + kv_head_idx * value_head_stride;
+
+                
                 IT * o_accs_head = (IT *)o_accs + bsz_idx * o_accs_bsz_stride
                                                 + head_idx * o_accs_head_stride;
                 float * o_a_s_head = (float *)o_a_s + bsz_idx * o_a_s_bsz_stride
                                                     + head_idx * o_a_s_head_stride;
+
+                const int context_length = (const int*)context_lens[bsz_idx];
 
                 simd<IT, HD> query_row = block_load<IT, HD>(query_head) * attn_scale;
 
@@ -2303,30 +2306,25 @@ void gqa_1_kernel(
                 int start_row = std::min(vid * VS + tid * sub_rows + std::min(tid, rem_rows), context_length);
                 int end_row = std::min(start_row + sub_rows + (tid < rem_rows), context_length);
                 for (int r = start_row; r < end_row; ++r) {
-                    simd<IT, HD> key_row = block_load<IT, HD>(key_head + r * HD);
+                    int which_block = r / block_size;
+                    int which_slot = r % block_size;
+                    int physical_block_number = block_table[which_block];
+
+                    const IT * key_head = (const IT *)key + physical_block_number * key_token_stride +
+                      kv_head_idx * key_head_stride +
+                      which_slot;
+                    simd<IT, HD> key_row = block_load<IT, HD>(key_head);
                     slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), key_row);
                 }
                 barrier();
 
                 simd<float, VS> attns = -sycl::detail::max_v<float>();
                 int row_num = (vid + 1) * VS > context_length ? context_length % VS : VS;
-                if (mask != 0) {
-                    // q @ k + mask
-                    const IT * mask_head = (const IT *)mask + bsz_idx * mask_bsz_stride
-                                                            + head_idx * mask_head_stride
-                                                            + vid * VS;
-                    for (int r = 0; r < row_num; ++r) {
-                        simd<IT, HD> key_row = slm_block_load<IT, HD>(r * HD * sizeof(IT));
-                        float attn = sycl::ext::intel::esimd::detail::sum<float, IT, HD>(query_row * key_row);
-                        attns[r] = attn + mask_head[r];
-                    }
-                } else {
-                    // q @ k
-                    for (int r = 0; r < row_num; ++r) {
-                        simd<IT, HD> key_row = slm_block_load<IT, HD>(r * HD * sizeof(IT));
-                        float attn = sycl::ext::intel::esimd::detail::sum<float, IT, HD>(query_row * key_row);
-                        attns[r] = attn;
-                    }
+                // q @ k
+                for (int r = 0; r < row_num; ++r) {
+                    simd<IT, HD> key_row = slm_block_load<IT, HD>(r * HD * sizeof(IT));
+                    float attn = sycl::ext::intel::esimd::detail::sum<float, IT, HD>(query_row * key_row);
+                    attns[r] = attn;
                 }
 
                 float max_attn = hmax<float, float, VS>(attns);
@@ -2335,6 +2333,13 @@ void gqa_1_kernel(
 
                 // copy v_cache to slm
                 for (int r = start_row; r < end_row; ++r) {
+                    int which_block = r / block_size;
+                    int which_slot = r % block_size;
+                    int physical_block_number = block_table[which_block];
+
+                    const IT * value_head = (const IT *)value + physical_block_number * value_token_stride +
+                      kv_head_idx * value_head_stride +
+                      which_slot;
                     simd<IT, HD> value_row = block_load<IT, HD>(value_head + r * HD);
                     slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), value_row);
                 }
@@ -2372,16 +2377,15 @@ void gqa_2_kernel(
     const int64_t output_head_stride,
     const int bsz,
     const int num_heads,
-    const int seq_length,
-    const int rows,
+    const int row_block_num,
     const at::Device & device
 ) {
     constexpr int SUB_HD = 8;
     static_assert(HD % SUB_HD == 0);
     static_assert(HD / SUB_HD <= GS);
 
-    const int sub_rows = rows / GS;
-    const int rem_rows = rows % GS;
+    const int sub_rows = row_block_num / GS;
+    const int rem_rows = row_block_num % GS;
 
     constexpr int accs_slm_offset = 0;
     constexpr int attn_slm_offset = GS * HD * sizeof(float);
@@ -2407,8 +2411,8 @@ void gqa_2_kernel(
                 IT * output_head = (IT *)output + bsz_idx * output_bsz_stride
                                                 + head_idx * output_head_stride;
 
-                int start_row = std::min(tid * sub_rows + std::min(tid, rem_rows), rows);
-                int end_row = std::min(start_row + sub_rows + (tid < rem_rows), rows);
+                int start_row = std::min(tid * sub_rows + std::min(tid, rem_rows), row_block_num);
+                int end_row = std::min(start_row + sub_rows + (tid < rem_rows), row_block_num);
 
                 float max_attn = -sycl::detail::max_v<float>();
                 float softmax = 0;
@@ -2463,26 +2467,29 @@ auto dispatch_gqa_kernel(AT it) {
     }
 }
 
-void gqa(
-    torch::Tensor query,
-    torch::Tensor key,
-    torch::Tensor value,
-    std::optional<torch::Tensor> mask,
+void paged_attention_gqa(
     torch::Tensor output,
+    torch::Tensor query,
+    torch::Tensor key_cache,
+    torch::Tensor value_cache,
     int64_t bsz,
     int64_t num_heads,
     int64_t num_kv_heads,
-    int64_t seq_length,
-    int64_t context_length,
+    float scale,
+    torch::Tensor& block_tables,
+    torch::Tensor& context_lens,
+    int block_size,
     int64_t head_dim
 ) {
     constexpr int VS = 32;
     constexpr int GS = 32;
 
-    const int block_num = (context_length + VS - 1) / VS;
-    auto o_a_s = torch::empty({bsz, num_heads, 1, block_num * 2},
+    // TODO: check max_context_lens
+
+    const int row_block_num = (max_context_length + VS - 1) / VS;
+    auto o_a_s = torch::empty({bsz, num_heads, 1, row_block_num * 2},
                               torch::device(query.device()).dtype(torch::kFloat32));
-    auto o_accs = torch::empty({bsz, num_heads, 1, block_num * head_dim},
+    auto o_accs = torch::empty({bsz, num_heads, 1, row_block_num * head_dim},
                                torch::device(query.device()).dtype(query.dtype()));
 
     auto [func1, func2] = [&](){
@@ -2495,17 +2502,13 @@ void gqa(
         }
     }();
 
-    auto [mask_ptr, mask_bsz_stride, mask_head_stride] = mask ?
-        std::make_tuple((uint64_t)(mask->data_ptr()), mask->stride(0), mask->stride(1)) :
-        std::make_tuple((uint64_t)0, (int64_t)0, (int64_t)0);
-
     func1(
-        query.data_ptr(), key.data_ptr(), value.data_ptr(),
-        mask_ptr, o_a_s.data_ptr(), o_accs.data_ptr(),
-        query.stride(0), query.stride(1), query.stride(2), key.stride(0), key.stride(1),
-        value.stride(0), value.stride(1), mask_bsz_stride, mask_head_stride,
+        query.data_ptr(), key_cache.data_ptr(), value_cache.data_ptr(),
+        block_tables.data_ptr(), context_lens.data_ptr(), o_a_s.data_ptr(), o_accs.data_ptr(),
+        query.stride(0), query.stride(1), key.stride(0), key.stride(1),
+        value.stride(0), value.stride(1), 
         o_a_s.stride(0), o_a_s.stride(1), o_accs.stride(0), o_accs.stride(1),
-        bsz, num_heads, num_kv_heads, seq_length, context_length, block_num,
+        scale, block_size, bsz, num_heads, num_kv_heads, row_block_num,
         query.device()
     );
 
@@ -2514,7 +2517,7 @@ void gqa(
         o_a_s.stride(0), o_a_s.stride(1),
         o_accs.stride(0), o_accs.stride(1),
         output.stride(0), output.stride(1),
-        bsz, num_heads, seq_length, block_num,
+        bsz, num_heads, row_block_num,
         query.device()
     );
 }
