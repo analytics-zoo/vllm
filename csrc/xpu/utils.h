@@ -55,13 +55,13 @@ SYCL_EXTERNAL sycl::half2 sycl_half_fma2(sycl::half2 a, sycl::half2 b, sycl::hal
 int get_max_shared_memory_per_block_device_attribute(int device_id);
 
 namespace utils {
-    static inline sycl::queue& get_queue(const torch::Device& device) {
+    static inline sycl::queue& get_queue(const at::Device& device) {
         c10::impl::VirtualGuardImpl impl(device.type());
         c10::Stream c10_stream = impl.getStream(c10::Device(device));
 #if TORCH_VERSION_MAJOR >= 2 && TORCH_VERSION_MINOR >= 3
         return at::xpu::XPUStream(c10_stream).queue();
 #else
-        return xpu::get_queue_from_stream(c10_stream);
+        return ::xpu::get_queue_from_stream(c10_stream);
 #endif
     }
 
@@ -71,7 +71,7 @@ namespace utils {
 #if TORCH_VERSION_MAJOR >= 2 && TORCH_VERSION_MINOR >= 3
         // xpu::profiler_record(desc, event);
 #else
-        xpu::profiler_record(desc, event);
+        ::xpu::profiler_record(desc, event);
 #endif
         return event;
     }

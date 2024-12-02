@@ -2250,6 +2250,7 @@ void gqa_1_kernel(
     const int64_t key_head_stride,
     const int64_t value_token_stride,
     const int64_t value_head_stride,
+    const int64_t block_table_stride_batch,
     const int64_t o_a_s_bsz_stride,
     const int64_t o_a_s_head_stride,
     const int64_t o_accs_bsz_stride,
@@ -2298,7 +2299,12 @@ void gqa_1_kernel(
                 float * o_a_s_head = (float *)o_a_s + bsz_idx * o_a_s_bsz_stride
                                                     + head_idx * o_a_s_head_stride;
 
-                const int context_length = (const int*)context_lens[bsz_idx];
+                const int* block_tables_ptr = (const int*)block_tables;
+                const int* block_table =
+                    block_tables_ptr + bsz_idx * block_table_stride_batch;
+
+                const int* context_lens_ptr = (const int*)context_lens;
+                const int context_length = context_lens_ptr[bsz_idx];
 
                 simd<IT, HD> query_row = block_load<IT, HD>(query_head) * attn_scale;
 
@@ -2458,6 +2464,8 @@ void gqa_2_kernel(
     utils::submit_kernel(cgf, device, "gqa kernel 2/2");
 }
 
+using AT = at::ScalarType;
+using fp16 = sycl::half;
 template<const int VS, const int GS, const int HD>
 auto dispatch_gqa_kernel(AT it) {
     switch (it) {
@@ -2479,7 +2487,8 @@ void paged_attention_gqa(
     torch::Tensor& block_tables,
     torch::Tensor& context_lens,
     int block_size,
-    int64_t head_dim
+    int64_t head_dim,
+    int max_context_length
 ) {
     constexpr int VS = 32;
     constexpr int GS = 32;
@@ -2505,8 +2514,8 @@ void paged_attention_gqa(
     func1(
         query.data_ptr(), key_cache.data_ptr(), value_cache.data_ptr(),
         block_tables.data_ptr(), context_lens.data_ptr(), o_a_s.data_ptr(), o_accs.data_ptr(),
-        query.stride(0), query.stride(1), key.stride(0), key.stride(1),
-        value.stride(0), value.stride(1), 
+        query.stride(0), query.stride(1), key_cache.stride(0), key_cache.stride(1),
+        value_cache.stride(0), value_cache.stride(1), block_tables.stride(0),
         o_a_s.stride(0), o_a_s.stride(1), o_accs.stride(0), o_accs.stride(1),
         scale, block_size, bsz, num_heads, num_kv_heads, row_block_num,
         query.device()

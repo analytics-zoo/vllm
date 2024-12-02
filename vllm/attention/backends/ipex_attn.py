@@ -138,13 +138,13 @@ class IpexAttnMetadata(AttentionMetadata, PagedAttentionMetadata):
             num_prefill_tokens=0,
             num_decode_tokens=self.num_decode_tokens,
             slot_mapping=self.slot_mapping[self.num_prefill_tokens:],
-            seq_lens=None,
+            seq_lens=self.seq_lens[self.num_prefills:],
             seq_lens_tensor=self.seq_lens_tensor[self.num_prefills:],
             # max_query_len=None,
             max_decode_seq_len=self.max_decode_seq_len,
             query_start_loc=None,
             # seq_start_loc=None,
-            context_lens=None,
+            context_lens=self.context_lens[self.num_prefills:] if (torch.is_tensor(self.context_lens)) else None,
             block_tables=self.block_tables[self.num_prefills:],
         )
         return self._cached_decode_metadata
@@ -456,59 +456,82 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             # TODO(woosuk): Tune this heuristic.
             # For context len > 8192, use V2 kernel to avoid shared memory
             # shortage.
-            use_v1 = (max_seq_len <= 8192 and
-                      (max_num_partitions == 1 or num_seqs * num_heads > 512))
-            if use_v1:
-                # Run PagedAttention V1.
-                ipex_ops.paged_attention_v1(
-                    out,
-                    decode_query,
-                    key_cache,
-                    value_cache,
-                    self.num_kv_heads,
-                    self.scale,
-                    decode_meta.block_tables,
-                    decode_meta.seq_lens_tensor,
-                    block_size,
-                    max_seq_len,
-                    self.alibi_slopes,
-                    self.kv_cache_dtype,
-                    k_scale,
-                    v_scale,
-                )
-            else:
-                # Run PagedAttention V2.
-                assert _PARTITION_SIZE % block_size == 0
-                tmp_output = torch.empty(
-                    size=(num_seqs, num_heads, max_num_partitions, head_size),
-                    dtype=output.dtype,
-                    device=output.device,
-                )
-                exp_sums = torch.empty(
-                    size=(num_seqs, num_heads, max_num_partitions),
-                    dtype=torch.float32,
-                    device=output.device,
-                )
-                max_logits = torch.empty_like(exp_sums)
-                ipex_ops.paged_attention_v2(
-                    out,
-                    exp_sums,
-                    max_logits,
-                    tmp_output,
-                    decode_query,
-                    key_cache,
-                    value_cache,
-                    self.num_kv_heads,
-                    self.scale,
-                    decode_meta.block_tables,
-                    decode_meta.seq_lens_tensor,
-                    block_size,
-                    max_seq_len,
-                    self.alibi_slopes,
-                    self.kv_cache_dtype,
-                    k_scale,
-                    v_scale,
-                )
+
+            # TODO(xiangyu): refine logic here
+            bsz = len(decode_meta.seq_lens)
+            decode_context_lens = torch.tensor(attn_metadata.context_lens, dtype=torch.int, device=decode_query.device)
+            max_context_len = max(attn_metadata.context_lens)
+            # print(decode_context_lens)
+            # print(max_context_len)
+            import vllm._C.ops
+            vllm._C.ops.paged_attention_gqa(
+                out,
+                decode_query,
+                key_cache,
+                value_cache,
+                bsz,
+                self.num_heads,
+                self.num_kv_heads,
+                self.scale,
+                decode_meta.block_tables,
+                decode_context_lens,
+                block_size,
+                head_size,
+                max_context_len
+            )
+            # use_v1 = (max_seq_len <= 8192 and
+            #           (max_num_partitions == 1 or num_seqs * num_heads > 512))
+            # if use_v1:
+            #     # Run PagedAttention V1.
+            #     ipex_ops.paged_attention_v1(
+            #         out,
+            #         decode_query,
+            #         key_cache,
+            #         value_cache,
+            #         self.num_kv_heads,
+            #         self.scale,
+            #         decode_meta.block_tables,
+            #         decode_meta.seq_lens_tensor,
+            #         block_size,
+            #         max_seq_len,
+            #         self.alibi_slopes,
+            #         self.kv_cache_dtype,
+            #         k_scale,
+            #         v_scale,
+            #     )
+            # else:
+            #     # Run PagedAttention V2.
+            #     assert _PARTITION_SIZE % block_size == 0
+            #     tmp_output = torch.empty(
+            #         size=(num_seqs, num_heads, max_num_partitions, head_size),
+            #         dtype=output.dtype,
+            #         device=output.device,
+            #     )
+            #     exp_sums = torch.empty(
+            #         size=(num_seqs, num_heads, max_num_partitions),
+            #         dtype=torch.float32,
+            #         device=output.device,
+            #     )
+            #     max_logits = torch.empty_like(exp_sums)
+            #     ipex_ops.paged_attention_v2(
+            #         out,
+            #         exp_sums,
+            #         max_logits,
+            #         tmp_output,
+            #         decode_query,
+            #         key_cache,
+            #         value_cache,
+            #         self.num_kv_heads,
+            #         self.scale,
+            #         decode_meta.block_tables,
+            #         decode_meta.seq_lens_tensor,
+            #         block_size,
+            #         max_seq_len,
+            #         self.alibi_slopes,
+            #         self.kv_cache_dtype,
+            #         k_scale,
+            #         v_scale,
+            #     )
             output[num_prefill_tokens:] = out
 
             # Reshape the output tensor.
