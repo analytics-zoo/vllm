@@ -281,9 +281,12 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         # TODO(xiangyu): refine here
         # key_cache = key_cache.view(num_blocks, num_kv_heads, head_size // x,
         #                            -1, x)
-        key_cache = key_cache.view(num_blocks, num_kv_heads, head_size, -1)
+
+        # key_cache = key_cache.view(num_blocks, num_kv_heads, head_size, -1)
+        key_cache = key_cache.view(num_blocks, num_kv_heads, -1, head_size)
         value_cache = kv_cache[1]
-        value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
+        # value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
+        value_cache = value_cache.view(num_blocks, num_kv_heads, -1, head_size)
         return key_cache, value_cache
 
     def forward(
@@ -446,7 +449,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             # Decoding run.
             max_seq_len = decode_meta.max_decode_seq_len
             out = torch.empty_like(decode_query)
-            block_size = value_cache.shape[3]
+            block_size = value_cache.shape[2]
             num_seqs, num_heads, head_size = decode_query.shape
             max_num_partitions = ((max_seq_len + _PARTITION_SIZE - 1) //
                                   _PARTITION_SIZE)

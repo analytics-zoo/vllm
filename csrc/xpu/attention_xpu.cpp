@@ -2320,15 +2320,16 @@ void gqa_1_kernel(
 
                     const IT * key_head = (const IT *)key + physical_block_number * key_token_stride +
                       kv_head_idx * key_head_stride +
-                      which_slot;
-                    for (int i = 0; i < HD; i++) {
-                      IT temp_key = key_head[i * value_block_stride];
-                      slm_scalar_store<IT>((r - vid * VS) * HD * sizeof(IT) +
-                                                    i * sizeof(IT),
-                                                temp_key);
-                    }
-                    // simd<IT, HD> key_row = block_load<IT, HD>(key_head);
-                    // slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), key_row);
+                      which_slot * key_block_stride;
+                    // for (int i = 0; i < HD; i++) {
+                    //   IT temp_key = key_head[i * value_block_stride];
+                    //   slm_scalar_store<IT>((r - vid * VS) * HD * sizeof(IT) +
+                    //                                 i * sizeof(IT),
+                    //                             temp_key);
+                    // }
+
+                    simd<IT, HD> key_row = block_load<IT, HD>(key_head);
+                    slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), key_row);
                 }
                 barrier();
 
@@ -2353,16 +2354,17 @@ void gqa_1_kernel(
 
                     const IT * value_head = (const IT *)value + physical_block_number * value_token_stride +
                       kv_head_idx * value_head_stride +
-                      which_slot;
+                      which_slot * value_block_stride;
 
-                    for (int i = 0; i < HD; i++) {
-                      IT temp_value = value_head[i * value_block_stride];
-                      slm_scalar_store<IT>((r - vid * VS) * HD * sizeof(IT) +
-                                                    i * sizeof(IT),
-                                                temp_value);
-                    }
-                    // simd<IT, HD> value_row = block_load<IT, HD>(value_head);
-                    // slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), value_row);
+                    // for (int i = 0; i < HD; i++) {
+                    //   IT temp_value = value_head[i * value_block_stride];
+                    //   slm_scalar_store<IT>((r - vid * VS) * HD * sizeof(IT) +
+                    //                                 i * sizeof(IT),
+                    //                             temp_value);
+                    // }
+
+                    simd<IT, HD> value_row = block_load<IT, HD>(value_head);
+                    slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), value_row);
                 }
                 barrier();
 
@@ -2507,8 +2509,6 @@ void paged_attention_gqa(
 ) {
     constexpr int VS = 32;
     constexpr int GS = 32;
-
-    // TODO: check max_context_lens
 
     const int row_block_num = (max_context_length + VS - 1) / VS;
     auto o_a_s = torch::empty({bsz, num_heads, 1, row_block_num * 2},
