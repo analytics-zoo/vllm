@@ -157,7 +157,6 @@ class GLMMLP(nn.Module):
         # [s, b, 4hp]
         intermediate_parallel, _ = self.dense_h_to_4h(hidden_states)
         # IPEX-LLM changes start: workaround fp16 overflow
-        import torch.nn.functional as F
         if self.layer >= 38 and intermediate_parallel.device.type == "xpu":
             d = intermediate_parallel.shape[-1] // 2
             intermediate_parallel[..., d:] /= 10
