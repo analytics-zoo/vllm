@@ -488,12 +488,8 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             # For context len > 8192, use V2 kernel to avoid shared memory
             # shortage.
 
-            # TODO(xiangyu): refine logic here
             bsz = len(decode_meta.seq_lens)
-            decode_context_lens = torch.tensor(attn_metadata.context_lens, dtype=torch.int, device=decode_query.device)
             max_context_len = max(attn_metadata.context_lens)
-            # print(decode_context_lens)
-            # print(max_context_len)
             import vllm._C.ops
             if using_gqa_kernel:
                 block_size = value_cache.shape[2]
