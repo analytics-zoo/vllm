@@ -26,6 +26,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "paged_attention_gqa",
     &paged_attention_gqa,
     "PagedAttention GQA.");
+  ops.def(
+    "paged_attention_mha",
+    &paged_attention_mha,
+    "PagedAttention MHA.");
     
   // Activation ops
   ops.def(
@@ -80,6 +84,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "reshape_and_cache",
     &reshape_and_cache,
     "Reshape the key and value tensors and cache them");
+  cache_ops.def(
+    "reshape_and_cache_ipexllm",
+    &reshape_and_cache_ipexllm,
+    "Reshape the key and value tensors and cache them for ipex_llm");
 
   // Quant
   ops.def(

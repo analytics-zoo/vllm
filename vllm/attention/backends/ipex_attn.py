@@ -214,6 +214,12 @@ def use_sdp_causal(head_dim, query_states):
         and query_states.dtype in [torch.float, torch.half]     # fp32/fp16
     )
 
+def use_gqa_kernel(num_heads, num_kv_heads):
+    kv_cahce_format = os.environ.get('USE_VLLM_KVCACHE')
+    if kv_cahce_format is None and num_heads != num_kv_heads:
+        return True
+    else:
+        return False
 
 class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
 
@@ -265,29 +271,34 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         num_kv_heads: int,
         head_size: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # x = 1
-        # num_blocks = kv_cache.shape[1]
-
-        # key_cache = kv_cache[0]
-        # key_cache = key_cache.view(num_blocks, num_kv_heads, head_size // x,
-        #                            -1, x)
-        # value_cache = kv_cache[1]
-        # value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
-        # return key_cache, value_cache
         x = 16 // kv_cache.element_size()
         num_blocks = kv_cache.shape[1]
 
         key_cache = kv_cache[0]
-        # TODO(xiangyu): refine here
-        # key_cache = key_cache.view(num_blocks, num_kv_heads, head_size // x,
-        #                            -1, x)
+        key_cache = key_cache.view(num_blocks, num_kv_heads, head_size // x,
+                                   -1, x)
 
-        # key_cache = key_cache.view(num_blocks, num_kv_heads, head_size, -1)
+        value_cache = kv_cache[1]
+        value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
+        return key_cache, value_cache
+
+
+    def split_kv_cache_ipexllm(
+        self,
+        kv_cache: torch.Tensor,
+        num_kv_heads: int,
+        head_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        x = 16 // kv_cache.element_size()
+        num_blocks = kv_cache.shape[1]
+
+        key_cache = kv_cache[0]
         key_cache = key_cache.view(num_blocks, num_kv_heads, -1, head_size)
         value_cache = kv_cache[1]
-        # value_cache = value_cache.view(num_blocks, num_kv_heads, head_size, -1)
         value_cache = value_cache.view(num_blocks, num_kv_heads, -1, head_size)
         return key_cache, value_cache
+
 
     def forward(
         self,
@@ -323,19 +334,35 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
+        using_gqa_kernel = use_gqa_kernel(self.num_heads, self.num_kv_heads)
+
         if kv_cache is not None:
-            key_cache, value_cache = self.split_kv_cache(
-                kv_cache, self.num_kv_heads, self.head_size)
-            ipex_ops.reshape_and_cache(
-                key,
-                value,
-                key_cache,
-                value_cache,
-                attn_metadata.slot_mapping.flatten(),
-                self.kv_cache_dtype,
-                k_scale,
-                v_scale,
-            )
+            if using_gqa_kernel:
+                key_cache, value_cache = self.split_kv_cache_ipexllm(
+                    kv_cache, self.num_kv_heads, self.head_size)      
+                ipex_ops.reshape_and_cache_ipexllm(
+                    key,
+                    value,
+                    key_cache,
+                    value_cache,
+                    attn_metadata.slot_mapping.flatten(),
+                    self.kv_cache_dtype,
+                    k_scale,
+                    v_scale,
+                )
+            else:
+                key_cache, value_cache = self.split_kv_cache(
+                    kv_cache, self.num_kv_heads, self.head_size)   
+                ipex_ops.reshape_and_cache(
+                    key,
+                    value,
+                    key_cache,
+                    value_cache,
+                    attn_metadata.slot_mapping.flatten(),
+                    self.kv_cache_dtype,
+                    k_scale,
+                    v_scale,
+                )
 
         # New added code-segment
         num_prefill_tokens = attn_metadata.num_prefill_tokens
@@ -449,7 +476,6 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             # Decoding run.
             max_seq_len = decode_meta.max_decode_seq_len
             out = torch.empty_like(decode_query)
-            block_size = value_cache.shape[2]
             num_seqs, num_heads, head_size = decode_query.shape
             max_num_partitions = ((max_seq_len + _PARTITION_SIZE - 1) //
                                   _PARTITION_SIZE)
@@ -469,74 +495,79 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             # print(decode_context_lens)
             # print(max_context_len)
             import vllm._C.ops
-            vllm._C.ops.paged_attention_gqa(
-                out,
-                decode_query,
-                key_cache,
-                value_cache,
-                bsz,
-                self.num_heads,
-                self.num_kv_heads,
-                self.scale,
-                decode_meta.block_tables,
-                decode_meta.seq_lens_tensor,
-                block_size,
-                head_size,
-                max_seq_len
-            )
-            # use_v1 = (max_seq_len <= 8192 and
-            #           (max_num_partitions == 1 or num_seqs * num_heads > 512))
-            # if use_v1:
-            #     # Run PagedAttention V1.
-            #     ipex_ops.paged_attention_v1(
-            #         out,
-            #         decode_query,
-            #         key_cache,
-            #         value_cache,
-            #         self.num_kv_heads,
-            #         self.scale,
-            #         decode_meta.block_tables,
-            #         decode_meta.seq_lens_tensor,
-            #         block_size,
-            #         max_seq_len,
-            #         self.alibi_slopes,
-            #         self.kv_cache_dtype,
-            #         k_scale,
-            #         v_scale,
-            #     )
-            # else:
-            #     # Run PagedAttention V2.
-            #     assert _PARTITION_SIZE % block_size == 0
-            #     tmp_output = torch.empty(
-            #         size=(num_seqs, num_heads, max_num_partitions, head_size),
-            #         dtype=output.dtype,
-            #         device=output.device,
-            #     )
-            #     exp_sums = torch.empty(
-            #         size=(num_seqs, num_heads, max_num_partitions),
-            #         dtype=torch.float32,
-            #         device=output.device,
-            #     )
-            #     max_logits = torch.empty_like(exp_sums)
-            #     ipex_ops.paged_attention_v2(
-            #         out,
-            #         exp_sums,
-            #         max_logits,
-            #         tmp_output,
-            #         decode_query,
-            #         key_cache,
-            #         value_cache,
-            #         self.num_kv_heads,
-            #         self.scale,
-            #         decode_meta.block_tables,
-            #         decode_meta.seq_lens_tensor,
-            #         block_size,
-            #         max_seq_len,
-            #         self.alibi_slopes,
-            #         self.kv_cache_dtype,
-            #         k_scale,
-            #         v_scale,
-            #     )
+            if using_gqa_kernel:
+                block_size = value_cache.shape[2]
+                vllm._C.ops.paged_attention_gqa(
+                    out,
+                    decode_query,
+                    key_cache,
+                    value_cache,
+                    bsz,
+                    self.num_heads,
+                    self.num_kv_heads,
+                    self.scale,
+                    decode_meta.block_tables,
+                    decode_meta.seq_lens_tensor,
+                    block_size,
+                    head_size,
+                    max_seq_len,
+                    max_context_len
+                )
+            else:
+                block_size = value_cache.shape[3]
+                use_v1 = (max_seq_len <= 8192 and
+                        (max_num_partitions == 1 or num_seqs * num_heads > 512))
+                if use_v1:
+                    # Run PagedAttention V1.
+                    ipex_ops.paged_attention_v1(
+                        out,
+                        decode_query,
+                        key_cache,
+                        value_cache,
+                        self.num_kv_heads,
+                        self.scale,
+                        decode_meta.block_tables,
+                        decode_meta.seq_lens_tensor,
+                        block_size,
+                        max_seq_len,
+                        self.alibi_slopes,
+                        self.kv_cache_dtype,
+                        k_scale,
+                        v_scale,
+                    )
+                else:
+                    # Run PagedAttention V2.
+                    assert _PARTITION_SIZE % block_size == 0
+                    tmp_output = torch.empty(
+                        size=(num_seqs, num_heads, max_num_partitions, head_size),
+                        dtype=output.dtype,
+                        device=output.device,
+                    )
+                    exp_sums = torch.empty(
+                        size=(num_seqs, num_heads, max_num_partitions),
+                        dtype=torch.float32,
+                        device=output.device,
+                    )
+                    max_logits = torch.empty_like(exp_sums)
+                    ipex_ops.paged_attention_v2(
+                        out,
+                        exp_sums,
+                        max_logits,
+                        tmp_output,
+                        decode_query,
+                        key_cache,
+                        value_cache,
+                        self.num_kv_heads,
+                        self.scale,
+                        decode_meta.block_tables,
+                        decode_meta.seq_lens_tensor,
+                        block_size,
+                        max_seq_len,
+                        self.alibi_slopes,
+                        self.kv_cache_dtype,
+                        k_scale,
+                        v_scale,
+                    )
             output[num_prefill_tokens:] = out
 
             # Reshape the output tensor.

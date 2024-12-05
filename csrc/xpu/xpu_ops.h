@@ -65,6 +65,10 @@ void reshape_and_cache(torch::Tensor &key, torch::Tensor &value,
                            torch::Tensor &key_cache, torch::Tensor &value_cache,
                            torch::Tensor &slot_mapping,
                            const std::string& kv_cache_dtype, const float kv_scale);
+void reshape_and_cache_ipexllm(torch::Tensor &key, torch::Tensor &value,
+                           torch::Tensor &key_cache, torch::Tensor &value_cache,
+                           torch::Tensor &slot_mapping,
+                           const std::string& kv_cache_dtype, const float kv_scale);
 
 void moe_align_block_size(
   torch::Tensor topk_ids,
@@ -152,5 +156,23 @@ void paged_attention_gqa(
     torch::Tensor& context_lens,
     int block_size,
     int64_t head_dim,
-    int max_context_length
+    int max_seq_len,
+    int max_context_len
+);
+
+void paged_attention_mha(
+    torch::Tensor output,
+    torch::Tensor query,
+    torch::Tensor key_cache,
+    torch::Tensor value_cache,
+    int64_t bsz,
+    int64_t num_heads,
+    int64_t num_kv_heads,
+    float scale,
+    torch::Tensor& block_tables,
+    torch::Tensor& context_lens,
+    int block_size,
+    int64_t head_dim,
+    int max_seq_len,
+    int max_context_len
 );
