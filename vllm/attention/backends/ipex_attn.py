@@ -215,8 +215,8 @@ def use_sdp_causal(head_dim, query_states):
     )
 
 def use_gqa_kernel(num_heads, num_kv_heads):
-    kv_cahce_format = os.environ.get('USE_VLLM_KVCACHE')
-    if kv_cahce_format is None and num_heads != num_kv_heads:
+    kv_cache_format = os.environ.get('USE_VLLM_KVCACHE')
+    if kv_cache_format is None and num_heads != num_kv_heads:
         return True
     else:
         return False
@@ -489,7 +489,6 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             # shortage.
 
             bsz = len(decode_meta.seq_lens)
-            max_context_len = max(attn_metadata.context_lens)
             import vllm._C.ops
             if using_gqa_kernel:
                 block_size = value_cache.shape[2]
@@ -506,8 +505,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     decode_meta.seq_lens_tensor,
                     block_size,
                     head_size,
-                    max_seq_len,
-                    max_context_len
+                    max_seq_len
                 )
             else:
                 block_size = value_cache.shape[3]

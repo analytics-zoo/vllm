@@ -156,8 +156,7 @@ void paged_attention_gqa(
     torch::Tensor& context_lens,
     int block_size,
     int64_t head_dim,
-    int max_seq_len,
-    int max_context_len
+    int max_seq_len
 );
 
 void paged_attention_mha(

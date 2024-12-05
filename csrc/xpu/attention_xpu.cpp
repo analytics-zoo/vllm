@@ -2246,12 +2246,9 @@ void gqa_1_kernel(
     void * o_accs,
     const int64_t query_bsz_stride,
     const int64_t query_head_stride,
-    const int64_t key_token_stride,
-    const int64_t key_head_stride,
-    const int64_t key_block_stride,
-    const int64_t value_token_stride,
-    const int64_t value_head_stride,
-    const int64_t value_block_stride,
+    const int64_t kv_token_stride,
+    const int64_t kv_head_stride,
+    const int64_t kv_block_stride,
     const int64_t block_table_stride_batch,
     const int64_t o_a_s_bsz_stride,
     const int64_t o_a_s_head_stride,
@@ -2288,11 +2285,6 @@ void gqa_1_kernel(
 
                 const IT * query_head = (const IT *)query + bsz_idx * query_bsz_stride
                                                           + head_idx * query_head_stride;
-                // const IT * key_head = (const IT *)key + bsz_idx * key_bsz_stride
-                //                                       + kv_head_idx * key_head_stride;
-                // const IT * value_head = (const IT *)value + bsz_idx * value_bsz_stride
-                //                                           + kv_head_idx * value_head_stride;
-
                 
                 IT * o_accs_head = (IT *)o_accs + bsz_idx * o_accs_bsz_stride
                                                 + head_idx * o_accs_head_stride;
@@ -2316,15 +2308,9 @@ void gqa_1_kernel(
                     int which_slot = r % block_size;
                     int physical_block_number = block_table[which_block];
 
-                    const IT * key_head = (const IT *)key + physical_block_number * key_token_stride +
-                      kv_head_idx * key_head_stride +
-                      which_slot * key_block_stride;
-                    // for (int i = 0; i < HD; i++) {
-                    //   IT temp_key = key_head[i * value_block_stride];
-                    //   slm_scalar_store<IT>((r - vid * VS) * HD * sizeof(IT) +
-                    //                                 i * sizeof(IT),
-                    //                             temp_key);
-                    // }
+                    const IT * key_head = (const IT *)key + physical_block_number * kv_token_stride +
+                      kv_head_idx * kv_head_stride +
+                      which_slot * kv_block_stride;
 
                     simd<IT, HD> key_row = block_load<IT, HD>(key_head);
                     slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), key_row);
@@ -2350,16 +2336,9 @@ void gqa_1_kernel(
                     int which_slot = r % block_size;
                     int physical_block_number = block_table[which_block];
 
-                    const IT * value_head = (const IT *)value + physical_block_number * value_token_stride +
-                      kv_head_idx * value_head_stride +
-                      which_slot * value_block_stride;
-
-                    // for (int i = 0; i < HD; i++) {
-                    //   IT temp_value = value_head[i * value_block_stride];
-                    //   slm_scalar_store<IT>((r - vid * VS) * HD * sizeof(IT) +
-                    //                                 i * sizeof(IT),
-                    //                             temp_value);
-                    // }
+                    const IT * value_head = (const IT *)value + physical_block_number * kv_token_stride +
+                      kv_head_idx * kv_head_stride +
+                      which_slot * kv_block_stride;
 
                     simd<IT, HD> value_row = block_load<IT, HD>(value_head);
                     slm_block_store<IT, HD>((r - vid * VS) * HD * sizeof(IT), value_row);
@@ -2503,8 +2482,7 @@ void paged_attention_gqa(
     torch::Tensor& context_lens,
     int block_size,
     int64_t head_dim,
-    int max_seq_len,
-    int max_context_len
+    int max_seq_len
 ) {
     constexpr int VS = 32;
     constexpr int GS = 32;
@@ -2528,8 +2506,7 @@ void paged_attention_gqa(
     func1(
         query.data_ptr(), key_cache.data_ptr(), value_cache.data_ptr(),
         block_tables.data_ptr(), context_lens.data_ptr(), o_a_s.data_ptr(), o_accs.data_ptr(),
-        query.stride(0), query.stride(1), key_cache.stride(0), key_cache.stride(1), key_cache.stride(2),
-        value_cache.stride(0), value_cache.stride(1), value_cache.stride(2), block_tables.stride(0),
+        query.stride(0), query.stride(1), key_cache.stride(0), key_cache.stride(1), key_cache.stride(2), block_tables.stride(0),
         o_a_s.stride(0), o_a_s.stride(1), o_accs.stride(0), o_accs.stride(1),
         scale, block_size, bsz, num_heads, num_kv_heads, row_block_num,
         query.device()
