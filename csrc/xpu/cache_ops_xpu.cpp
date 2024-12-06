@@ -491,17 +491,7 @@ void gather_cached_kv_kernel_optimized(
 
       const int head_idx = index / head_size;
       const int head_offset = index % head_size;
-      const int x_idx = head_offset / x;
-      const int x_offset = head_offset % x;
 
-      // const int src_key_idx =
-      //     block_idx * num_heads * (head_size / x) * block_size * x +
-      //     head_idx * (head_size / x) * block_size * x + x_idx * block_size * x +
-      //     block_offset * x + x_offset;
-
-      // const int src_value_idx = block_idx * num_heads * head_size * block_size +
-      //     head_idx * head_size * block_size + head_offset * block_size +
-      //     block_offset;
       const int src_value_idx = 
         block_idx * num_heads * head_size * block_size + 
         head_idx * head_size * block_size + 
