@@ -158,20 +158,3 @@ void paged_attention_gqa(
     int64_t head_dim,
     int max_seq_len
 );
-
-void paged_attention_mha(
-    torch::Tensor output,
-    torch::Tensor query,
-    torch::Tensor key_cache,
-    torch::Tensor value_cache,
-    int64_t bsz,
-    int64_t num_heads,
-    int64_t num_kv_heads,
-    float scale,
-    torch::Tensor& block_tables,
-    torch::Tensor& context_lens,
-    int block_size,
-    int64_t head_dim,
-    int max_seq_len,
-    int max_context_len
-);

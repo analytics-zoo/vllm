@@ -289,8 +289,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         num_kv_heads: int,
         head_size: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-
-        x = 16 // kv_cache.element_size()
+        # For GQA kernel, key_cache and value_cache shape should be [num_blocks, num_kv_heads, head_size, block_size]
         num_blocks = kv_cache.shape[1]
 
         key_cache = kv_cache[0]

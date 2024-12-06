@@ -26,10 +26,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "paged_attention_gqa",
     &paged_attention_gqa,
     "PagedAttention GQA.");
-  ops.def(
-    "paged_attention_mha",
-    &paged_attention_mha,
-    "PagedAttention MHA.");
     
   // Activation ops
   ops.def(
