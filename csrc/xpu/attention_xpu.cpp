@@ -528,6 +528,390 @@ void context_attention_kernel_v1(
   queue.submit(cgf);
 }
 
+// How about implement a first edition that can be used with non-chunked
+// prefill requests, so that we can make sure the reference for heads is
+// correct
+template <typename scalar_t, int GS, int HD>
+void context_attention_kernel_v1_back(
+    void* query, void* key, void* value, const void* block_tables,
+    const float scale, const void* query_start_loc, const void* seq_lens,
+    const void* context_lens, const int block_size,
+    const int x,  // x in kv_cache
+    void* out,    // output
+    const int block_table_stride_batch, const int block_table_stride_seq,
+    const int query_stride_bs, const int query_stride_head,
+    const int query_stride_dim, const int k_cache_stride_tokens,
+    const int k_cache_stride_head, const int k_cache_stride_dim,
+    const int k_cache_stride_block_size, const int k_cache_stride_x,
+    const int v_cache_stride_tokens, const int v_cache_stride_head,
+    const int v_cache_stride_dim, const int v_cache_stride_block_size,
+    const int out_stride_tokens, const int out_stride_head,
+    const int num_queries_per_kv, const int max_input_length,
+    const int batch_size, const int num_heads) {
+  static_assert(GS * HD * sizeof(scalar_t) * 2 < 64 * 1024);
+
+  const size_t key_slm_offset = 0;
+  const size_t value_slm_offset = GS * HD * sizeof(scalar_t);
+  sycl::queue& queue = vllm::xpu::vllmGetQueue();
+
+  // Get the maximum seq_lens
+  sycl::range<3> global_size(batch_size, num_heads,
+                             (max_input_length + GS - 1) / GS * GS);
+  sycl::range<3> local_size(1, 1, GS);
+
+  auto cgf = [&](sycl::handler& handle) {
+    handle.parallel_for(
+        sycl::nd_range<3>(global_size, local_size),
+        [=](sycl::nd_item<3> item) SYCL_ESIMD_KERNEL {
+          slm_init<GS * HD * sizeof(scalar_t) * 2>();
+
+          const size_t bsz_idx = item.get_global_id(0);
+          const size_t head_idx = item.get_global_id(1);
+          // Assuming we have 32 query head and 8 kv_heads. Then
+          // num_queries_per_group should be 4 For head_idx 13, then
+          // kv_head_idx = 13 / 4 = 3, which is correct
+          const size_t kv_head_idx = head_idx / num_queries_per_kv;
+          const int32_t seq_idx = item.get_global_id(2);
+          const size_t gid = item.get_group(2);
+          const size_t tid = item.get_local_id(2);
+
+          // const int64_t * seq_len = (const int64_t *) seq_lens;
+          const int32_t* seq_len = (const int32_t*)seq_lens;
+          int32_t seq_bound = seq_len[bsz_idx];
+
+          const int32_t* query_loc = (const int32_t*)query_start_loc;
+          // There is a possibility that the current token index pass
+          // over the seq_len, therefore: token_idx is the position in
+          // the query
+          int32_t token_idx =
+              query_loc[bsz_idx] + std::min(seq_idx, seq_bound - 1);
+
+          const int32_t* context_len_pointer = (const int32_t*)context_lens;
+
+          const int* block_tables_ptr = (const int*)block_tables;
+          const int* block_table =
+              block_tables_ptr + bsz_idx * block_table_stride_batch;
+          // I guess this context_len should be 0...
+          const int32_t context_len = context_len_pointer[bsz_idx];
+
+          // Position in the sequence
+          // context + seq_idx
+          // const int32_t token_position =
+          //     context_len + std::min(seq_idx, seq_bound - 1);
+          const int32_t token_position = context_len + seq_idx;
+
+          // static const CONSTANT char FMT[] =
+          //     "Invoke target function...\n ";
+
+          // sycl::ext::oneapi::experimental::printf(FMT);
+          // static const CONSTANT char FMT[] =
+          //     "GroupID = %6d bsz_idx = %6d seq_len = %6d seq_idx =
+          //     %6d" "local_id = "
+          //     "%6d "
+          //     "token_idx = %6d "
+          //     "context_len = %6d "
+          //     "v_cache_stride_head_dim = %6d "
+          //     "token_position = %6d\n";
+          // sycl::ext::oneapi::experimental::printf(
+          //     FMT, gid, bsz_idx, seq_bound, seq_idx, tid,
+          //     token_idx, context_len, v_cache_stride_dim,
+          //     token_position);
+
+          const scalar_t* query_head = (const scalar_t*)query +
+                                       token_idx * query_stride_bs +
+                                       head_idx * query_stride_head;
+          // Target output
+          scalar_t* out_head =
+              (scalar_t*)out +
+              (query_loc[bsz_idx] + seq_idx) * out_stride_tokens +
+              head_idx * out_stride_head;
+
+          int32_t context_groups = context_len / GS;
+
+          // Each token load its query_row
+          simd<scalar_t, HD> query_row =
+              block_load<scalar_t, HD>(query_head) * scale;
+          simd<scalar_t, HD> accv = 0;
+          simd<scalar_t, GS> softmaxv = 0;
+          scalar_t max_attn = -sycl::detail::max_v<scalar_t>();
+
+          // ################# Handle n * GS context part ######################
+          int32_t n = context_len / GS;
+          int32_t context_offset = context_len % GS;
+
+          for (int32_t group = 0; group < n; ++group) {
+            size_t target_key_position = group * GS + tid;
+            int which_block = target_key_position / block_size;
+            int which_slot = target_key_position % block_size;
+
+            int physical_block_number = block_table[which_block];
+            const scalar_t* key_head =
+                (const scalar_t*)key +
+                physical_block_number * k_cache_stride_tokens +
+                kv_head_idx * k_cache_stride_head +
+                which_slot * k_cache_stride_block_size;
+            for (int i = 0; i < HD / x; i++) {
+              // Load 8 elements, decided by x
+              simd<scalar_t, 8> key_row =
+                  block_load<scalar_t, 8>(key_head + i * k_cache_stride_dim);
+              slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t) +
+                                  8 * i * sizeof(scalar_t),
+                              key_row);
+            }
+
+            const scalar_t* value_head =
+                (const scalar_t*)value +
+                physical_block_number * v_cache_stride_tokens +
+                kv_head_idx * v_cache_stride_head + which_slot;
+            for (int i = 0; i < HD; i++) {
+              scalar_t temp_value = value_head[i * v_cache_stride_dim];
+              slm_scalar_store<scalar_t>(value_slm_offset +
+                                             tid * HD * sizeof(scalar_t) +
+                                             i * sizeof(scalar_t),
+                                         temp_value);
+            }
+            barrier();
+
+            // Calculate QK^T for this group...
+            simd<scalar_t, GS> attnv;
+#pragma unroll
+            for (size_t r = 0; r < GS; ++r) {
+              simd<scalar_t, HD> key_row = slm_block_load<scalar_t, HD>(
+                  key_slm_offset + r * HD * sizeof(scalar_t));
+              scalar_t attn =
+                  sycl::ext::intel::esimd::detail::sum<scalar_t, scalar_t, HD>(
+                      query_row * key_row);
+              attnv[r] = attn;
+            }
+            scalar_t new_max_attn =
+                std::max(hmax<scalar_t, scalar_t, GS>(attnv), max_attn);
+            scalar_t attn_exp = exp(max_attn - new_max_attn);
+            accv = accv * attn_exp;
+            softmaxv = softmaxv * attn_exp;
+            max_attn = new_max_attn;
+            const simd<scalar_t, GS> attn_expv = exp(attnv - max_attn);
+#pragma unorll
+            for (size_t r = 0; r < GS; ++r) {
+              simd<scalar_t, HD> value_row = slm_block_load<scalar_t, HD>(
+                  value_slm_offset + r * HD * sizeof(scalar_t));
+              accv += value_row * attn_expv[r];
+            }
+            softmaxv += attn_expv;
+            barrier();
+          }
+
+          // ########## End for handling context n * GS part ###########
+
+          // ########## Handle n * GS ################
+          for (size_t group = 0; group < gid; ++group) {
+            // 1. begins to load each position's key and value
+            size_t target_key_position = context_len + group * GS + tid;
+            int which_block = target_key_position / block_size;
+            int which_slot = target_key_position % block_size;
+
+            int physical_block_number = block_table[which_block];
+            const scalar_t* key_head =
+                (const scalar_t*)key +
+                physical_block_number * k_cache_stride_tokens +
+                kv_head_idx * k_cache_stride_head +
+                which_slot * k_cache_stride_block_size;
+            for (int i = 0; i < HD / x; i++) {
+              // Load 8 elements
+              simd<scalar_t, 8> key_row =
+                  block_load<scalar_t, 8>(key_head + i * k_cache_stride_dim);
+              slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t) +
+                                  8 * i * sizeof(scalar_t),
+                              key_row);
+            }
+
+            const scalar_t* value_head =
+                (const scalar_t*)value +
+                physical_block_number * v_cache_stride_tokens +
+                kv_head_idx * v_cache_stride_head + which_slot;
+            for (int i = 0; i < HD; i++) {
+              scalar_t temp_value = value_head[i * v_cache_stride_dim];
+              slm_scalar_store<scalar_t>(value_slm_offset +
+                                             tid * HD * sizeof(scalar_t) +
+                                             i * sizeof(scalar_t),
+                                         temp_value);
+            }
+            barrier();
+            simd<scalar_t, GS> attnv;
+#pragma unroll
+            for (size_t r = 0; r < GS; ++r) {
+              simd<scalar_t, HD> key_row = slm_block_load<scalar_t, HD>(
+                  key_slm_offset + r * HD * sizeof(scalar_t));
+              scalar_t attn =
+                  sycl::ext::intel::esimd::detail::sum<scalar_t, scalar_t, HD>(
+                      query_row * key_row);
+              attnv[r] = attn;
+            }
+
+            scalar_t new_max_attn =
+                std::max(hmax<scalar_t, scalar_t, GS>(attnv), max_attn);
+            scalar_t attn_exp = exp(max_attn - new_max_attn);
+            accv = accv * attn_exp;
+
+            softmaxv = softmaxv * attn_exp;
+            max_attn = new_max_attn;
+            const simd<scalar_t, GS> attn_expv = exp(attnv - max_attn);
+#pragma unroll
+            for (size_t r = 0; r < GS; ++r) {
+              simd<scalar_t, HD> value_row = slm_block_load<scalar_t, HD>(
+                  value_slm_offset + r * HD * sizeof(scalar_t));
+              accv += value_row * attn_expv[r];
+            }
+            softmaxv += attn_expv;
+            barrier();
+          }
+
+          // ######### End of handle n * GS part ##########
+
+          // ################ Handle offset part ####################
+          scalar_t softmax =
+              sycl::ext::intel::esimd::detail::sum<scalar_t, scalar_t, GS>(
+                  softmaxv);
+
+          // ########### handle context offset ############
+          if (tid < context_offset) {
+            size_t target_key_position = n * GS + tid;
+            int which_block = target_key_position / block_size;
+            int which_slot = target_key_position % block_size;
+
+            int physical_block_number = block_table[which_block];
+            const scalar_t* key_head =
+                (const scalar_t*)key +
+                physical_block_number * k_cache_stride_tokens +
+                kv_head_idx * k_cache_stride_head +
+                which_slot * k_cache_stride_block_size;
+            for (int i = 0; i < HD / x; i++) {
+              // Load 8 elements
+              simd<scalar_t, 8> key_row =
+                  block_load<scalar_t, 8>(key_head + i * k_cache_stride_dim);
+              slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t) +
+                                  8 * i * sizeof(scalar_t),
+                              key_row);
+            }
+
+            const scalar_t* value_head =
+                (const scalar_t*)value +
+                physical_block_number * v_cache_stride_tokens +
+                kv_head_idx * v_cache_stride_head + which_slot;
+            for (int i = 0; i < HD; i++) {
+              // Seems to have an error here
+              scalar_t temp_value = value_head[i * v_cache_stride_dim];
+              slm_scalar_store<scalar_t>(value_slm_offset +
+                                             tid * HD * sizeof(scalar_t) +
+                                             i * sizeof(scalar_t),
+                                         temp_value);
+            }
+          }
+
+          barrier();
+
+          if (token_position < seq_bound) {
+#pragma unroll
+            for (size_t r = 0; r < context_offset; ++r) {
+              simd<scalar_t, HD> key_row = slm_block_load<scalar_t, HD>(
+                  key_slm_offset + r * HD * sizeof(scalar_t));
+              simd<scalar_t, HD> value_row = slm_block_load<scalar_t, HD>(
+                  value_slm_offset + r * HD * sizeof(scalar_t));
+              scalar_t attn =
+                  sycl::ext::intel::esimd::detail::sum<scalar_t, scalar_t, HD>(
+                      query_row * key_row);
+              if (attn <= max_attn) {
+                scalar_t attn_exp =
+                    sycl::ext::intel::esimd::exp(attn - max_attn);
+                accv += value_row * attn_exp;
+                softmax += attn_exp;
+              } else {
+                scalar_t attn_exp =
+                    sycl::ext::intel::esimd::exp(max_attn - attn);
+                accv = accv * attn_exp + value_row;
+                softmax = softmax * attn_exp + 1;
+                max_attn = attn;
+              }
+            }
+          }
+          barrier();
+
+          // ############## handle seq offset #################
+          if (token_position < seq_bound) {
+            const int64_t which_block =
+                static_cast<int64_t>(token_position / block_size);
+            const int64_t which_slot =
+                static_cast<int64_t>(token_position % block_size);
+
+            const int64_t physical_block_number =
+                static_cast<int64_t>(block_table[which_block]);
+
+            const scalar_t* key_head =
+                (const scalar_t*)key +
+                physical_block_number * k_cache_stride_tokens +
+                kv_head_idx * k_cache_stride_head +
+                which_slot * k_cache_stride_block_size;
+
+            for (int i = 0; i < HD / x; i++) {
+              // Load 8 elements
+              simd<scalar_t, 8> key_row =
+                  block_load<scalar_t, 8>(key_head + i * k_cache_stride_dim);
+              slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t) +
+                                  8 * i * sizeof(scalar_t),
+                              key_row);
+            }
+
+            // [num_blocks, num_kv_heads, head_size, block_size]
+            const scalar_t* value_head =
+                (const scalar_t*)value +
+                physical_block_number * v_cache_stride_tokens +
+                kv_head_idx * v_cache_stride_head + which_slot;
+            for (int i = 0; i < HD; i++) {
+              scalar_t temp_value = value_head[i * v_cache_stride_dim];
+              slm_scalar_store<scalar_t>(value_slm_offset +
+                                             tid * HD * sizeof(scalar_t) +
+                                             i * sizeof(scalar_t),
+                                         temp_value);
+            }
+          }
+          barrier();
+
+          if (token_position < seq_bound) {
+            for (size_t r = 0; r <= tid; ++r) {
+              simd<scalar_t, HD> key_row = slm_block_load<scalar_t, HD>(
+                  key_slm_offset + r * HD * sizeof(scalar_t));
+              simd<scalar_t, HD> value_row = slm_block_load<scalar_t, HD>(
+                  value_slm_offset + r * HD * sizeof(scalar_t));
+              scalar_t attn =
+                  sycl::ext::intel::esimd::detail::sum<scalar_t, scalar_t, HD>(
+                      query_row * key_row);
+              if (attn <= max_attn) {
+                scalar_t attn_exp =
+                    sycl::ext::intel::esimd::exp(attn - max_attn);
+                accv += value_row * attn_exp;
+                softmax += attn_exp;
+              } else {
+                scalar_t attn_exp =
+                    sycl::ext::intel::esimd::exp(max_attn - attn);
+                accv = accv * attn_exp + value_row;
+                softmax = softmax * attn_exp + 1;
+                max_attn = attn;
+              }
+            }
+
+            if (softmax > 0) {
+              simd<scalar_t, HD> result = accv / softmax;
+              block_store(out_head, result);
+            } else {
+              simd<scalar_t, HD> result = 0;
+              block_store(out_head, result);
+            }
+          }
+          // ######## Ending of handling seq offset ##########
+        });
+  };
+  queue.submit(cgf);
+}
+
 template <typename T, int GS, int HD>
 void context_attention_kernel_v2(
     void* query, void* key, void* value, const void* block_tables,
