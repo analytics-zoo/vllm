@@ -165,8 +165,6 @@ void reshape_and_cache_ipexllm_kernel(
 
     const int head_idx = i / head_size;
     const int head_offset = i % head_size;
-    const int x_idx = head_offset / x;
-    const int x_offset = head_offset % x;
 
     // const int64_t tgt_key_idx =
     //     block_idx * num_heads * (head_size / x) * block_size * x +
