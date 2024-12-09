@@ -148,7 +148,7 @@ inline float block_sum(
 // prefill requests, so that we can make sure the reference for heads is
 // correct
 template <typename scalar_t, int GS, int HD>
-void context_attention_kernel_v1(
+void context_attention_kernel_v1_reshaped(
     void* query, void* key, void* value, const void* block_tables,
     const float scale, const void* query_start_loc, const void* seq_lens,
     const void* context_lens, const int block_size,
@@ -216,23 +216,6 @@ void context_attention_kernel_v1(
           //     context_len + std::min(seq_idx, seq_bound - 1);
           const int32_t token_position = context_len + seq_idx;
 
-          // static const CONSTANT char FMT[] =
-          //     "Invoke target function...\n ";
-
-          // sycl::ext::oneapi::experimental::printf(FMT);
-          // static const CONSTANT char FMT[] =
-          //     "GroupID = %6d bsz_idx = %6d seq_len = %6d seq_idx =
-          //     %6d" "local_id = "
-          //     "%6d "
-          //     "token_idx = %6d "
-          //     "context_len = %6d "
-          //     "v_cache_stride_head_dim = %6d "
-          //     "token_position = %6d\n";
-          // sycl::ext::oneapi::experimental::printf(
-          //     FMT, gid, bsz_idx, seq_bound, seq_idx, tid,
-          //     token_idx, context_len, v_cache_stride_dim,
-          //     token_position);
-
           const scalar_t* query_head = (const scalar_t*)query +
                                        token_idx * query_stride_bs +
                                        head_idx * query_stride_head;
@@ -267,15 +250,6 @@ void context_attention_kernel_v1(
                 physical_block_number * k_cache_stride_tokens +
                 kv_head_idx * k_cache_stride_head +
                 which_slot * k_cache_stride_block_size;
-                // Then just load this line
-            // for (int i = 0; i < HD / x; i++) {
-            //   // Load 8 elements, decided by x
-            //   simd<scalar_t, 8> key_row =
-            //       block_load<scalar_t, 8>(key_head + i * k_cache_stride_dim);
-            //   slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t) +
-            //                       8 * i * sizeof(scalar_t),
-            //                   key_row);
-            // }
             simd<scalar_t, HD> key_row = block_load<scalar_t, HD>(key_head);
             slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t), key_row);
 
@@ -283,13 +257,6 @@ void context_attention_kernel_v1(
                 (const scalar_t*)value +
                 physical_block_number * v_cache_stride_tokens +
                 kv_head_idx * v_cache_stride_head + which_slot * v_cache_stride_block_size;
-            // for (int i = 0; i < HD; i++) {
-            //   scalar_t temp_value = value_head[i * v_cache_stride_dim];
-            //   slm_scalar_store<scalar_t>(value_slm_offset +
-            //                                  tid * HD * sizeof(scalar_t) +
-            //                                  i * sizeof(scalar_t),
-            //                              temp_value);
-            // }
             simd<scalar_t, HD> value_row = block_load<scalar_t, HD>(value_head);
             slm_block_store(value_slm_offset + tid * HD * sizeof(scalar_t),
                             value_row);
@@ -338,14 +305,6 @@ void context_attention_kernel_v1(
                 physical_block_number * k_cache_stride_tokens +
                 kv_head_idx * k_cache_stride_head +
                 which_slot * k_cache_stride_block_size;
-            // for (int i = 0; i < HD / x; i++) {
-            //   // Load 8 elements
-            //   simd<scalar_t, 8> key_row =
-            //       block_load<scalar_t, 8>(key_head + i * k_cache_stride_dim);
-            //   slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t) +
-            //                       8 * i * sizeof(scalar_t),
-            //                   key_row);
-            // }
             simd<scalar_t, HD> key_row = block_load<scalar_t, HD>(key_head);
             slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t),
                             key_row);
@@ -353,13 +312,6 @@ void context_attention_kernel_v1(
                 (const scalar_t*)value +
                 physical_block_number * v_cache_stride_tokens +
                 kv_head_idx * v_cache_stride_head + which_slot * v_cache_stride_block_size;
-            // for (int i = 0; i < HD; i++) {
-            //   scalar_t temp_value = value_head[i * v_cache_stride_dim];
-            //   slm_scalar_store<scalar_t>(value_slm_offset +
-            //                                  tid * HD * sizeof(scalar_t) +
-            //                                  i * sizeof(scalar_t),
-            //                              temp_value);
-            // }
             simd<scalar_t, HD> value_row = block_load<scalar_t, HD>(value_head);
             slm_block_store(value_slm_offset + tid * HD * sizeof(scalar_t),
                             value_row);
@@ -412,35 +364,15 @@ void context_attention_kernel_v1(
                 physical_block_number * k_cache_stride_tokens +
                 kv_head_idx * k_cache_stride_head +
                 which_slot * k_cache_stride_block_size;
-            // for (int i = 0; i < HD / x; i++) {
-            //   // Load 8 elements
-            //   simd<scalar_t, 8> key_row =
-            //       block_load<scalar_t, 8>(key_head + i * k_cache_stride_dim);
-            //   slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t) +
-            //                       8 * i * sizeof(scalar_t),
-            //                   key_row);
-            // }
             simd<scalar_t, HD> key_row = block_load<scalar_t, HD>(key_head);
             slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t),
                             key_row);
 
-            // const scalar_t* value_head =
-            //     (const scalar_t*)value +
-            //     physical_block_number * v_cache_stride_tokens +
-            //     kv_head_idx * v_cache_stride_head + which_slot;
             const scalar_t* value_head =
                 (const scalar_t*)value +
                 physical_block_number * v_cache_stride_tokens +
                 kv_head_idx * v_cache_stride_head +
                 which_slot * v_cache_stride_block_size;
-            // for (int i = 0; i < HD; i++) {
-            //   // Seems to have an error here
-            //   scalar_t temp_value = value_head[i * v_cache_stride_dim];
-            //   slm_scalar_store<scalar_t>(value_slm_offset +
-            //                                  tid * HD * sizeof(scalar_t) +
-            //                                  i * sizeof(scalar_t),
-            //                              temp_value);
-            // }
             simd<scalar_t, HD> value_row = block_load<scalar_t, HD>(value_head);
             slm_block_store(value_slm_offset + tid * HD * sizeof(scalar_t),
                             value_row);
@@ -493,28 +425,12 @@ void context_attention_kernel_v1(
             slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t),
                             key_row);
 
-            // for (int i = 0; i < HD / x; i++) {
-            //   // Load 8 elements
-            //   simd<scalar_t, 8> key_row =
-            //       block_load<scalar_t, 8>(key_head + i * k_cache_stride_dim);
-            //   slm_block_store(key_slm_offset + tid * HD * sizeof(scalar_t) +
-            //                       8 * i * sizeof(scalar_t),
-            //                   key_row);
-            // }
-
             // [num_blocks, num_kv_heads, head_size, block_size]
             const scalar_t* value_head =
                 (const scalar_t*)value +
                 physical_block_number * v_cache_stride_tokens +
                 kv_head_idx * v_cache_stride_head +
                 which_slot * v_cache_stride_block_size;
-            // for (int i = 0; i < HD; i++) {
-            //   scalar_t temp_value = value_head[i * v_cache_stride_dim];
-            //   slm_scalar_store<scalar_t>(value_slm_offset +
-            //                                  tid * HD * sizeof(scalar_t) +
-            //                                  i * sizeof(scalar_t),
-            //                              temp_value);
-            // }
             simd<scalar_t, HD> value_row = block_load<scalar_t, HD>(value_head);
             slm_block_store(value_slm_offset + tid * HD * sizeof(scalar_t),
                             value_row);
@@ -562,7 +478,7 @@ void context_attention_kernel_v1(
 // prefill requests, so that we can make sure the reference for heads is
 // correct
 template <typename scalar_t, int GS, int HD>
-void context_attention_kernel_v1_back(
+void context_attention_kernel_v1(
     void* query, void* key, void* value, const void* block_tables,
     const float scale, const void* query_start_loc, const void* seq_lens,
     const void* context_lens, const int block_size,
@@ -2586,13 +2502,11 @@ torch::Tensor context_attention_forward_v1(
                           at::device(query.device()).dtype(query.dtype()));
 
   // key should be in shape:
-  // 1. [num_tokens, num_kv_head, head_dim] or
-  // 2. [num_blocks, num_heads, block_size, head_dim]
-  assert(key_dimension == 4);
+  // 1. [num_blocks, num_heads, block_size, head_dim]
+  // 2. [num_blocks, num_heads, head_dim / x, block_size, x]
+  assert(key_dimension == 4 or key_dimension == 5);
   assert(query.scalar_type() == key.scalar_type() &&
          query.scalar_type() == value.scalar_type());
-  // TODO: remove this...
-  assert(head_dim == 128);
   assert(query.scalar_type() == at::ScalarType::Half);
 
   int query_stride_token = query.stride(0);
@@ -2602,50 +2516,93 @@ torch::Tensor context_attention_forward_v1(
 
   assert(num_heads % num_kv_heads == 0);
   int num_queries_per_kv = num_heads / num_kv_heads;
-
-  // key/value: num_blocks, num_kv_heads, num_blocks, head_dim)
-  int block_size = value.size(2);
-  // int x = key.size(4);
   int block_table_stride_bsz = block_tables.stride(0);
   int block_table_stride_seq = block_tables.stride(1);
-  int k_cache_stride_0 = key.stride(0);
-  int k_cache_stride_1 = key.stride(1);
-  int k_cache_stride_2 = key.stride(2);
-  int k_cache_stride_3 = key.stride(3);
-  // int k_cache_stride_x = key.stride(4);
+  if (key_dimension == 4) {
+    // key/value: num_blocks, num_kv_heads, num_blocks, head_dim)
+    int block_size = value.size(2);
+    int k_cache_stride_0 = key.stride(0);
+    int k_cache_stride_1 = key.stride(1);
+    int k_cache_stride_2 = key.stride(2);
+    int k_cache_stride_3 = key.stride(3);
 
-  int v_cache_stride_0 = value.stride(0);
-  int v_cache_stride_1 = value.stride(1);
-  int v_cache_stride_2 = value.stride(2);
-  int v_cache_stride_3 = value.stride(3);
-  switch(head_dim) {
-    case 128:
-      vllm::context_attention_kernel_v1<sycl::half, 32, 128>(
-          query.data_ptr(), key.data_ptr(), value.data_ptr(),
-          block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
-          seq_lens.data_ptr(), context_lens.data_ptr(), block_size,
-          output.data_ptr(), block_table_stride_bsz, block_table_stride_seq,
-          query_stride_token, query_stride_head, query_stride_dim,
-          k_cache_stride_0, k_cache_stride_1, k_cache_stride_2,
-          k_cache_stride_3, v_cache_stride_0,
-          v_cache_stride_1, v_cache_stride_2, v_cache_stride_3,
-          output.stride(0), output.stride(1), num_queries_per_kv,
-          max_input_length, batch_size, num_heads);
-      break;
-    case 64:
-      vllm::context_attention_kernel_v1<sycl::half, 32, 64>(
-          query.data_ptr(), key.data_ptr(), value.data_ptr(),
-          block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
-          seq_lens.data_ptr(), context_lens.data_ptr(), block_size,
-          output.data_ptr(), block_table_stride_bsz, block_table_stride_seq,
-          query_stride_token, query_stride_head, query_stride_dim,
-          k_cache_stride_0, k_cache_stride_1, k_cache_stride_2,
-          k_cache_stride_3, v_cache_stride_0,
-          v_cache_stride_1, v_cache_stride_2, v_cache_stride_3,
-          output.stride(0), output.stride(1), num_queries_per_kv,
-          max_input_length, batch_size, num_heads);
-      break;
-    default: throw std::runtime_error("unsupported head_dim");
+    int v_cache_stride_0 = value.stride(0);
+    int v_cache_stride_1 = value.stride(1);
+    int v_cache_stride_2 = value.stride(2);
+    int v_cache_stride_3 = value.stride(3);
+    switch (head_dim) {
+      case 128:
+        vllm::context_attention_kernel_v1_reshaped<sycl::half, 32, 128>(
+            query.data_ptr(), key.data_ptr(), value.data_ptr(),
+            block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
+            seq_lens.data_ptr(), context_lens.data_ptr(), block_size,
+            output.data_ptr(), block_table_stride_bsz, block_table_stride_seq,
+            query_stride_token, query_stride_head, query_stride_dim,
+            k_cache_stride_0, k_cache_stride_1, k_cache_stride_2,
+            k_cache_stride_3, v_cache_stride_0, v_cache_stride_1,
+            v_cache_stride_2, v_cache_stride_3, output.stride(0),
+            output.stride(1), num_queries_per_kv, max_input_length, batch_size,
+            num_heads);
+        break;
+      case 64:
+        vllm::context_attention_kernel_v1_reshaped<sycl::half, 32, 64>(
+            query.data_ptr(), key.data_ptr(), value.data_ptr(),
+            block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
+            seq_lens.data_ptr(), context_lens.data_ptr(), block_size,
+            output.data_ptr(), block_table_stride_bsz, block_table_stride_seq,
+            query_stride_token, query_stride_head, query_stride_dim,
+            k_cache_stride_0, k_cache_stride_1, k_cache_stride_2,
+            k_cache_stride_3, v_cache_stride_0, v_cache_stride_1,
+            v_cache_stride_2, v_cache_stride_3, output.stride(0),
+            output.stride(1), num_queries_per_kv, max_input_length, batch_size,
+            num_heads);
+        break;
+      default:
+        throw std::runtime_error("unsupported head_dim");
+    }
+  } else {
+    int x = key.size(4);
+    int block_size = value.size(3);
+    int k_cache_stride_token = key.stride(0);
+    int k_cache_stride_head = key.stride(1);
+    int k_cache_stride_head_dim = key.stride(2);
+    int k_cache_stride_block = key.stride(3);
+    int k_cache_stride_x = key.stride(4);
+
+    int v_cache_stride_token = value.stride(0);
+    int v_cache_stride_head = value.stride(1);
+    int v_cache_stride_head_dim = value.stride(2);
+    int v_cache_stride_block = value.stride(3);
+    switch (head_dim) {
+      case 128:
+        vllm::context_attention_kernel_v1<sycl::half, 32, 128>(
+            query.data_ptr(), key.data_ptr(), value.data_ptr(),
+            block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
+            seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
+            output.data_ptr(), block_table_stride_bsz, block_table_stride_seq,
+            query_stride_token, query_stride_head, query_stride_dim,
+            k_cache_stride_token, k_cache_stride_head, k_cache_stride_head_dim,
+            k_cache_stride_block, k_cache_stride_x, v_cache_stride_token,
+            v_cache_stride_head, v_cache_stride_head_dim, v_cache_stride_block,
+            output.stride(0), output.stride(1), num_queries_per_kv,
+            max_input_length, batch_size, num_heads);
+        break;
+      case 64:
+        vllm::context_attention_kernel_v1<sycl::half, 32, 64>(
+            query.data_ptr(), key.data_ptr(), value.data_ptr(),
+            block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
+            seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
+            output.data_ptr(), block_table_stride_bsz, block_table_stride_seq,
+            query_stride_token, query_stride_head, query_stride_dim,
+            k_cache_stride_token, k_cache_stride_head, k_cache_stride_head_dim,
+            k_cache_stride_block, k_cache_stride_x, v_cache_stride_token,
+            v_cache_stride_head, v_cache_stride_head_dim, v_cache_stride_block,
+            output.stride(0), output.stride(1), num_queries_per_kv,
+            max_input_length, batch_size, num_heads);
+        break;
+      default:
+        throw std::runtime_error("unsupported head_dim");
+    }
   }
   return output;
 }
