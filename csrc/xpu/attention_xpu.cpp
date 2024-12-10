@@ -144,9 +144,6 @@ inline float block_sum(
         item_ct1.get_sub_group(), sum, 0);
 }
 
-// How about implement a first edition that can be used with non-chunked
-// prefill requests, so that we can make sure the reference for heads is
-// correct
 template <typename scalar_t, int GS, int HD>
 void context_attention_kernel_v1_reshaped(
     void* query, void* key, void* value, const void* block_tables,
