@@ -1,10 +1,10 @@
 #include <torch/extension.h>
 #include <ext/intel/esimd.hpp>
 
-#include "kv.h"
-#include "device.h"
+// #include "kv.h"
+// #include "device.h"
 #include "utils.h"
-#include "memory.h"
+// #include "memory.h"
 
 using fp16 = sycl::half;
 using bf16 = sycl::ext::oneapi::bfloat16;
@@ -49,19 +49,19 @@ void reshape_key_cache_kernel(
                 const int* block_table =
                     block_tables_ptr + bsz_idx * block_table_stride_batch;
                 
-                const int32_t* context_len_ptr = (const int32_t*)context_lens;
+                const int32_t* context_len_ptr = (const int32_t*)context_lengths;
                 const int32_t context_length = context_len_ptr[bsz_idx];
 
                 int physical_block_number = block_table[block_idx];
 
-                const IT * key_block = (const IT *)key + physical_block_number * key_token_stride
+                fp16 * key_block = (fp16 *)key + physical_block_number * key_token_stride
                                                        + head_idx * key_head_stride;
 
                 simd<fp16, HD * ExecuteSize> new_key_rows;
                 #pragma unroll
                 for (int i = 0; i < ExecuteSize; ++i) {
                     simd<fp16, HD> key_row =
-                        cblock_load<IT, HD>(key_block + i * HD, block_idx * ExecuteSize + i < context_length);
+                        cblock_load<fp16, HD>(key_block + i * HD, block_idx * ExecuteSize + i < context_length);
                     new_key_rows.template bit_cast_view<float>().template select<HD / 2, ExecuteSize>(i) =
                         key_row.template bit_cast_view<float>();
                 }
@@ -80,8 +80,6 @@ void reshape_value_cache_kernel(
     const void* context_lengths,
     const int64_t value_token_stride,
     const int64_t value_head_stride,
-    const int64_t new_value_token_stride,
-    const int64_t new_value_head_stride,
     const int64_t block_table_stride_batch,
     const int bsz,
     const int num_kv_heads,
@@ -104,21 +102,21 @@ void reshape_value_cache_kernel(
                 const int* block_table =
                     block_tables_ptr + bsz_idx * block_table_stride_batch;
                 
-                const int32_t* context_len_ptr = (const int32_t*)context_lens;
+                const int32_t* context_len_ptr = (const int32_t*)context_lengths;
                 const int32_t context_length = context_len_ptr[bsz_idx];
 
                 int physical_block_number = block_table[block_idx];
 
-                const IT * value_block = (const IT *)value + physical_block_number * value_token_stride
+                fp16 * value_block = (fp16 *)value + physical_block_number * value_token_stride
                                                            + head_idx * value_head_stride;
 
                 #pragma unroll
                 for (int i = 0; i < ExecuteSize; i += 2) {
                     simd<fp16, 2 * HD> merged_value_row;
                     merged_value_row.template select<HD, 2>(0) =
-                        cblock_load<IT, HD>(value_block + i * HD, block_idx * KVS + i < context_length);
+                        cblock_load<fp16, HD>(value_block + i * HD, block_idx * KVS + i < context_length);
                     merged_value_row.template select<HD, 2>(1) =
-                        cblock_load<IT, HD>(value_block + (i + 1) * HD, block_idx * KVS + i + 1 < context_length);
+                        cblock_load<fp16, HD>(value_block + (i + 1) * HD, block_idx * KVS + i + 1 < context_length);
 
                     #pragma unroll
                     for (int j = 0; j < HD / ExecuteSize; ++j) {
@@ -129,7 +127,7 @@ void reshape_value_cache_kernel(
                     }
                 }
 
-                simd<IT, HD> new_value_rows = slm_block_load<fp16, ExecuteSize * HD>(0);
+                simd<fp16, ExecuteSize * HD> new_value_rows = slm_block_load<fp16, ExecuteSize * HD>(0);
                 block_store<fp16, ExecuteSize * HD>(value_block, new_value_rows);
             }
         );
@@ -156,8 +154,10 @@ void chunked_prefill_xmx_kernel(
     const int64_t query_head_stride,
     const int64_t key_token_stride,
     const int64_t key_head_stride,
+    const int64_t key_block_stride,
     const int64_t value_token_stride,
     const int64_t value_head_stride,
+    const int64_t value_block_stride,
     const int64_t tmp_output_bsz_stride, // TODO(xiangyu): check this
     const int64_t tmp_output_head_stride,
     const int64_t output_token_stride,
@@ -167,8 +167,9 @@ void chunked_prefill_xmx_kernel(
     const int block_size,
     const int bsz,
     const int num_heads,
-    const int num_kv_heads,
-    const int max_input_length,
+    const int num_kv_heads,  
+    const int max_seq_length,
+    const int max_context_length,
     const torch::Device & device
 ) {
     constexpr int QS = RepeatCount * GS;
@@ -179,7 +180,7 @@ void chunked_prefill_xmx_kernel(
     static_assert(KVS % GS == 0);
     static_assert(KVS % Depth == 0);
 
-    const int group_num = (seq_length + QS - 1) / QS;
+    const int group_num = (max_seq_length + QS - 1) / QS;
     const int kv_group_num = num_heads / num_kv_heads;
 
     sycl::range<3> global_size(bsz, num_heads, group_num * GS);
@@ -201,11 +202,11 @@ void chunked_prefill_xmx_kernel(
                 const int tid = item.get_local_id(2);
 
                 const int32_t* seq_len = (const int32_t*)seq_lens;
-                int32_t seq_bound = seq_len[bsz_idx];
+                int32_t seq_length = seq_len[bsz_idx];
 
                 const int32_t* query_loc = (const int32_t*)query_start_loc;
                 int32_t token_idx =
-                    query_loc[bsz_idx] + std::min(seq_idx, seq_bound - 1);
+                    query_loc[bsz_idx] + std::min(seq_idx, seq_length - 1);
 
                 // const IT * query_head = (const IT *)query + token_idx * query_token_stride
                 //                                           + head_idx * query_head_stride;
@@ -400,8 +401,7 @@ auto dispatch_chunked_prefill_xmx(ST it) {
     }
 }
 
-void chunked_prefill_xmx(
-    torch::Tensor output,
+torch::Tensor chunked_prefill_xmx(
     torch::Tensor query,            // [num_tokens, num_heads, head_dim]
     torch::Tensor key,              // [num_tokens, num_kv_heads * head_size]
     torch::Tensor value,            // [num_tokens, num_kv_heads * head_size]
@@ -434,7 +434,7 @@ void chunked_prefill_xmx(
 
     // TODO(xiangyu): kv cache memory needs to refine
 
-    auto tmp_output = torch::zeros({bsz, num_heads, padding_seq_length, head_dim},
+    auto tmp_output = torch::zeros({batch_size, num_heads, padding_seq_length, head_dim},
                                    torch::device(query.device()).dtype(query.dtype()));
     // auto output = torch::empty({bsz, num_heads, seq_length, head_dim},
     //                            torch::device(query.device()).dtype(query.dtype()));
@@ -442,56 +442,42 @@ void chunked_prefill_xmx(
     // auto tmp_output = torch::zeros({num_tokens, num_heads, head_dim},
     //                       torch::device(query.device()).dtype(query.dtype()));
 
-    auto output = torch::zeros({num_tokens, num_heads, head_dim},
+    auto output = torch::empty({num_tokens, num_heads, head_dim},
                           torch::device(query.device()).dtype(query.dtype()));
 
     auto [k_func, v_func, sdp_func] = [&] () {
-        switch (get_gpu_type(query.device())) {
-            case GpuType::ARL:
-            case GpuType::ARC:
-            case GpuType::FLEX: {
-                switch (head_dim) {
-                    case 64:  return dispatch_chunked_prefill_xmx<64,  64, 64, 8, 16, 8>(query.scalar_type());
-                    case 80:  return dispatch_chunked_prefill_xmx<80,  64, 64, 8, 16, 8>(query.scalar_type());
-                    case 128: return dispatch_chunked_prefill_xmx<128, 32, 32, 8, 16, 8>(query.scalar_type());
-                    default: throw std::runtime_error("unsupported head_dim, only 128, 80 and 64 are supported");
-                }
-            }
-            case GpuType::LNL:
-            case GpuType::BMG: {
-                switch (head_dim) {
-                    case 64:  return dispatch_chunked_prefill_xmx<64,  64, 128, 8, 16, 16>(query.scalar_type());
-                    case 80:  return dispatch_chunked_prefill_xmx<80,  64, 128, 8, 16, 16>(query.scalar_type());
-                    case 128: return dispatch_chunked_prefill_xmx<128, 32, 64,  8, 16, 16>(query.scalar_type());
-                    default: throw std::runtime_error("unsupported head_dim, only 128, 80 and 64 are supported");
-                }
-            }
-            default: throw std::runtime_error("unsupported device, only ARC, FLEX, ARL, LNL and BMG are supported");
+        switch (head_dim) {
+            case 64:  return dispatch_chunked_prefill_xmx<64,  64, 64, 8, 16, 8>(query.scalar_type());
+            case 80:  return dispatch_chunked_prefill_xmx<80,  64, 64, 8, 16, 8>(query.scalar_type());
+            case 128: return dispatch_chunked_prefill_xmx<128, 32, 32, 8, 16, 8>(query.scalar_type());
+            default: throw std::runtime_error("unsupported head_dim, only 128, 80 and 64 are supported");
         }
     }();
 
     k_func(
-        key.data_ptr(), block_tables.data_ptr(), context_lengths.data_ptr(),
+        key.data_ptr(), block_tables.data_ptr(), context_lens.data_ptr(),
         key.stride(0), key.stride(1), block_tables.stride(0),
-        bsz, num_kv_heads, padding_context_length, query.device()
+        batch_size, num_kv_heads, padding_context_length, query.device()
     );
 
     v_func(
-        value.data_ptr(), block_tables.data_ptr(), context_lengths.data_ptr(),
+        value.data_ptr(), block_tables.data_ptr(), context_lens.data_ptr(),
         value.stride(0), value.stride(1), block_tables.stride(0),
-        bsz, num_kv_heads, padding_context_length, query.device()
+        batch_size, num_kv_heads, padding_context_length, query.device()
     );
 
     sdp_func(
-        query.data_ptr(), tmp_key.data_ptr(), tmp_value.data_ptr(),
-        mask.data_ptr(), tmp_output.data_ptr(), output.data_ptr(),
-        query.stride(0), query.stride(1), query.stride(2),
-        tmp_key.stride(0), tmp_key.stride(1),
-        tmp_value.stride(0), tmp_value.stride(1),
-        mask.stride(0), mask.stride(1), mask.stride(2),
+        query.data_ptr(), key.data_ptr(), value.data_ptr(),
+        block_tables.data_ptr(), query_start_loc.data_ptr(), seq_lens.data_ptr(), context_lens.data_ptr(),
+        tmp_output.data_ptr(), output.data_ptr(),
+        query.stride(0), query.stride(1),
+        key.stride(0), key.stride(1), key.stride(2), 
+        value.stride(0), value.stride(1), value.stride(2),
         tmp_output.stride(0), tmp_output.stride(1),
         output.stride(0), output.stride(1),
-        attn_scale, bsz, num_heads, num_kv_heads, seq_length, context_length,
+        block_tables.stride(0),
+        attn_scale, block_size, batch_size, num_heads, num_kv_heads,
+        max_input_length, max_context_length,
         query.device()
     );
 
