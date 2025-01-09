@@ -1,6 +1,8 @@
 #include <torch/extension.h>
 #include <ext/intel/esimd.hpp>
 
+#include <iostream>
+
 // #include "kv.h"
 // #include "device.h"
 #include "utils.h"
@@ -25,10 +27,13 @@ ESIMD_INLINE simd<IT, N> cblock_load(const IT* addr, bool condition) {
 template<typename IT, const int Depth, const int ExecuteSize, const int HD>
 void reshape_key_cache_kernel(
     const void * key,
+    fp16 * new_key,
     const void* block_tables, // [num_seqs, max_num_blocks_per_seq]
     const void* context_lengths,
     const int64_t key_token_stride,
     const int64_t key_head_stride,
+    const int64_t new_key_bsz_stride,
+    const int64_t new_key_head_stride,
     const int64_t block_table_stride_batch,
     const int bsz,
     const int num_kv_heads,
@@ -57,16 +62,21 @@ void reshape_key_cache_kernel(
                 fp16 * key_block = (fp16 *)key + physical_block_number * key_token_stride
                                                        + head_idx * key_head_stride;
 
+                fp16 * new_key_block = new_key + bsz_idx * new_key_bsz_stride
+                                               + head_idx * new_key_head_stride
+                                               + block_idx * ExecuteSize * HD;
+
                 simd<fp16, HD * ExecuteSize> new_key_rows;
                 #pragma unroll
                 for (int i = 0; i < ExecuteSize; ++i) {
                     simd<fp16, HD> key_row =
                         cblock_load<fp16, HD>(key_block + i * HD, block_idx * ExecuteSize + i < context_length);
+                    // simd<fp16, HD> key_row = block_load<fp16, HD>(key_block + i * HD);
                     new_key_rows.template bit_cast_view<float>().template select<HD / 2, ExecuteSize>(i) =
                         key_row.template bit_cast_view<float>();
                 }
 
-                block_store<fp16, ExecuteSize * HD>(key_block, new_key_rows);
+                block_store<fp16, ExecuteSize * HD>(new_key_block, new_key_rows);
             }
         );
     };
@@ -76,10 +86,13 @@ void reshape_key_cache_kernel(
 template<typename IT, const int Depth, const int ExecuteSize, const int HD, const int KVS>
 void reshape_value_cache_kernel(
     const void * value,
+    fp16 * new_value,
     const void* block_tables,
     const void* context_lengths,
     const int64_t value_token_stride,
     const int64_t value_head_stride,
+    const int64_t new_value_bsz_stride,
+    const int64_t new_value_head_stride,
     const int64_t block_table_stride_batch,
     const int bsz,
     const int num_kv_heads,
@@ -92,7 +105,7 @@ void reshape_value_cache_kernel(
         handle.parallel_for(
             sycl::nd_range<3>(global_size, local_size),
             [=](sycl::nd_item<3> item) SYCL_ESIMD_KERNEL {
-                slm_init<ExecuteSize * HD * sizeof(fp16)>();
+                // slm_init<ExecuteSize * HD * sizeof(fp16)>();
 
                 const int bsz_idx = item.get_global_id(0);
                 const int head_idx = item.get_global_id(1);
@@ -109,26 +122,35 @@ void reshape_value_cache_kernel(
 
                 fp16 * value_block = (fp16 *)value + physical_block_number * value_token_stride
                                                            + head_idx * value_head_stride;
+                fp16 * new_value_block = new_value + bsz_idx * new_value_bsz_stride
+                                                   + head_idx * new_value_head_stride
+                                                   + block_idx * ExecuteSize * HD;
 
                 #pragma unroll
                 for (int i = 0; i < ExecuteSize; i += 2) {
                     simd<fp16, 2 * HD> merged_value_row;
                     merged_value_row.template select<HD, 2>(0) =
-                        cblock_load<fp16, HD>(value_block + i * HD, block_idx * KVS + i < context_length);
+                        cblock_load<fp16, HD>(value_block + i * HD, block_idx * ExecuteSize + i < context_length);
                     merged_value_row.template select<HD, 2>(1) =
-                        cblock_load<fp16, HD>(value_block + (i + 1) * HD, block_idx * KVS + i + 1 < context_length);
+                        cblock_load<fp16, HD>(value_block + (i + 1) * HD, block_idx * ExecuteSize + i + 1 < context_length);
 
                     #pragma unroll
                     for (int j = 0; j < HD / ExecuteSize; ++j) {
-                        slm_block_store<fp16, 2 * ExecuteSize>(
-                            j * ExecuteSize * KVS + i / 2 * 2 * ExecuteSize,
+                        // slm_block_store<fp16, 2 * ExecuteSize>(
+                        //     j * ExecuteSize * ExecuteSize + i / 2 * 2 * ExecuteSize,
+                        //     merged_value_row.template select<2 * ExecuteSize, 1>(j * 2 * ExecuteSize)
+                        // );
+                        block_store<fp16, 2 * ExecuteSize>(
+                            new_value_block + j * ExecuteSize * KVS + i / 2 * 2 * ExecuteSize,
                             merged_value_row.template select<2 * ExecuteSize, 1>(j * 2 * ExecuteSize)
                         );
                     }
                 }
 
-                simd<fp16, ExecuteSize * HD> new_value_rows = slm_block_load<fp16, ExecuteSize * HD>(0);
-                block_store<fp16, ExecuteSize * HD>(value_block, new_value_rows);
+                // barrier();
+
+                // simd<fp16, ExecuteSize * HD> new_value_rows = slm_block_load<fp16, ExecuteSize * HD>(0);
+                // block_store<fp16, ExecuteSize * HD>(value_block, new_value_rows);
             }
         );
     };
@@ -150,12 +172,13 @@ void chunked_prefill_xmx_kernel(
     const void* context_lens,
     void * tmp_output,
     void * output,
-    const int64_t query_token_stride,
+    const int64_t query_bsz_stride,
     const int64_t query_head_stride,
-    const int64_t key_token_stride,
+    const int64_t query_seq_stride,
+    const int64_t key_bsz_stride,
     const int64_t key_head_stride,
     const int64_t key_block_stride,
-    const int64_t value_token_stride,
+    const int64_t value_bsz_stride,
     const int64_t value_head_stride,
     const int64_t value_block_stride,
     const int64_t tmp_output_bsz_stride, // TODO(xiangyu): check this
@@ -173,7 +196,7 @@ void chunked_prefill_xmx_kernel(
     const torch::Device & device
 ) {
     constexpr int QS = RepeatCount * GS;
-    constexpr int RS = KVS / GS; // 需要rs可以整除block_size
+    constexpr int RS = KVS / GS; // 需要rs可以整除block_size 目前是8
 
     static_assert(Depth % ExecuteSize == 0);
     static_assert(HD % ExecuteSize == 0);
@@ -208,12 +231,12 @@ void chunked_prefill_xmx_kernel(
                 int32_t token_idx =
                     query_loc[bsz_idx] + std::min(seq_idx, seq_length - 1);
 
-                // const IT * query_head = (const IT *)query + token_idx * query_token_stride
-                //                                           + head_idx * query_head_stride;
-                // const fp16 * key_head = (const fp16 *)key + bsz_idx * key_bsz_stride
-                //                                           + kv_head_idx * key_head_stride;
-                // const fp16 * value_head = (const fp16 *)value + bsz_idx * value_bsz_stride
-                //                                               + kv_head_idx * value_head_stride;
+                const IT * query_head = (const IT *)query + token_idx * query_bsz_stride
+                                                          + head_idx * query_head_stride;
+                const fp16 * key_head = (const fp16 *)key + bsz_idx * key_bsz_stride
+                                                          + kv_head_idx * key_head_stride;
+                const fp16 * value_head = (const fp16 *)value + bsz_idx * value_bsz_stride
+                                                              + kv_head_idx * value_head_stride;
                 
 
                 const int* block_tables_ptr = (const int*)block_tables;
@@ -233,16 +256,16 @@ void chunked_prefill_xmx_kernel(
                 simd<int, RepeatCount> seq_idxs;
                 #pragma unroll
                 for (int i = 0; i < RepeatCount; ++i) {
+                    // seq_idxs[i] = query_loc[bsz_idx] + std::min(gid * QS + tid * RepeatCount + i, seq_length - 1);
                     seq_idxs[i] = std::min(gid * QS + tid * RepeatCount + i, seq_length - 1);
                 }
 
                 simd<fp16, RepeatCount * HD> query_rows;
                 #pragma unroll
                 for (int i = 0; i < RepeatCount; ++i) {
-                    const IT * query_head = (const IT *)query + seq_idxs[i] * query_token_stride
-                                                          + head_idx * query_head_stride;
-
-                    simd<fp16, HD> query_row = block_load<IT, HD>(query_head) * attn_scale;
+                    simd<fp16, HD> query_row = block_load<IT, HD>(
+                        query_head + static_cast<int>(seq_idxs[i]) * query_seq_stride
+                    ) * attn_scale;
                     query_rows.template bit_cast_view<fp16, RepeatCount * HD / Depth, Depth>()
                         .template select<HD / Depth, RepeatCount, Depth, 1>(i, 0)
                         = query_row.template bit_cast_view<fp16, HD / Depth, Depth>();
@@ -256,35 +279,39 @@ void chunked_prefill_xmx_kernel(
                 for (int bid = 0; bid < static_cast<int>(block_num[0]); ++bid) {
                     #pragma unroll
                     for (int i = 0; i < RS; ++i) {
-                        int which_block = bid * KVS / RS + tid;
-                        int which_slot = i;
-                        int physical_block_number = block_table[which_block];
-                        // simd<fp16, HD> key_row = block_load<fp16, HD>(key_head + (bid * KVS + tid * RS + i) * HD);
-                        const fp16 * key_head = (const fp16 *)key +
-                            physical_block_number * key_token_stride +
-                            kv_head_idx * key_head_stride +
-                            which_slot * key_block_stride;
-                        simd<fp16, HD> key_row = block_load<fp16, HD>(key_head);
+                        simd<fp16, HD> key_row = block_load<fp16, HD>(key_head + (bid * KVS + tid * RS + i) * HD);
+
+                        // int which_block = bid * KVS / RS + tid;
+                        // int which_slot = i;
+                        // int physical_block_number = block_table[which_block];
+                        
+                        // const fp16 * key_head = (const fp16 *)key +
+                        //     physical_block_number * key_token_stride +
+                        //     kv_head_idx * key_head_stride +
+                        //     which_slot * key_block_stride;
+                        // simd<fp16, HD> key_row = block_load<fp16, HD>(key_head);
                         slm_block_store<fp16, HD>(k_slm_offset + (tid * RS + i) * HD * sizeof(fp16), key_row);
                     }
 
                     #pragma unroll
                     for (int i = 0; i < RS; ++i) {
-                        int which_block = bid * KVS / RS + tid;
-                        int which_slot = i;
-                        int physical_block_number = block_table[which_block];
-                        // simd<fp16, HD> value_row = block_load<fp16, HD>(value_head + (bid * KVS + tid * RS + i) * HD);
-                        const fp16 * value_head = (const fp16 *)value +
-                            physical_block_number * value_token_stride +
-                            kv_head_idx * value_head_stride +
-                            which_slot * value_block_stride;
-                        simd<fp16, HD> value_row = block_load<fp16, HD>(value_head);
+                        simd<fp16, HD> value_row = block_load<fp16, HD>(value_head + (bid * KVS + tid * RS + i) * HD);
+
+                        // int which_block = bid * KVS / RS + tid;
+                        // int which_slot = i;
+                        // int physical_block_number = block_table[which_block];
+                        
+                        // const fp16 * value_head = (const fp16 *)value +
+                        //     physical_block_number * value_token_stride +
+                        //     kv_head_idx * value_head_stride +
+                        //     which_slot * value_block_stride;
+                        // simd<fp16, HD> value_row = block_load<fp16, HD>(value_head);
                         slm_block_store<fp16, HD>(v_slm_offset + (tid * RS + i) * HD * sizeof(fp16), value_row);
                     }
 
                     barrier();
 
-                    simd<fp16, RepeatCount * KVS> attns;
+                    simd<fp16, RepeatCount * KVS> attns = 0;
 
                     // q @ k
                     #pragma unroll
@@ -378,9 +405,14 @@ void chunked_prefill_xmx_kernel(
                     simd<float, RepeatCount * ExecuteSize> accs = block_load<AT, RepeatCount * ExecuteSize>(src_addr);
                     #pragma unroll
                     for (int r = 0; r < RepeatCount; ++r) {
-                        IT * dst_addr = output_head + static_cast<int>(seq_idxs[r]) * HD + i * ExecuteSize;
-                        simd<float, ExecuteSize> result = accs.template select<ExecuteSize, 1>(r * ExecuteSize) / static_cast<fp16>(softmaxs[r]);
-                        block_store<IT, ExecuteSize>(dst_addr, result);
+                        // IT * dst_addr = output_head + static_cast<int>(seq_idxs[r]) * HD + i * ExecuteSize;
+                        if (r > 0 && seq_idxs[r] > seq_idxs[r-1]) {
+                            IT * cur_output_head = (IT *)output + (seq_idxs[r]) * output_token_stride
+                                                + head_idx * output_head_stride;
+                            IT * dst_addr = cur_output_head + i * ExecuteSize;
+                            simd<float, ExecuteSize> result = accs.template select<ExecuteSize, 1>(r * ExecuteSize) / static_cast<fp16>(softmaxs[r]);
+                            block_store<IT, ExecuteSize>(dst_addr, result);
+                        }
                     }
                 }
             }
@@ -434,6 +466,11 @@ torch::Tensor chunked_prefill_xmx(
 
     // TODO(xiangyu): kv cache memory needs to refine
 
+    auto tmp_key = torch::zeros({batch_size, num_kv_heads, padding_context_length, head_dim},
+                                torch::device(query.device()).dtype(torch::kFloat16));
+    auto tmp_value = torch::zeros({batch_size, num_kv_heads, padding_context_length, head_dim},
+                                  torch::device(query.device()).dtype(torch::kFloat16));
+
     auto tmp_output = torch::zeros({batch_size, num_heads, padding_seq_length, head_dim},
                                    torch::device(query.device()).dtype(query.dtype()));
     // auto output = torch::empty({bsz, num_heads, seq_length, head_dim},
@@ -442,37 +479,52 @@ torch::Tensor chunked_prefill_xmx(
     // auto tmp_output = torch::zeros({num_tokens, num_heads, head_dim},
     //                       torch::device(query.device()).dtype(query.dtype()));
 
-    auto output = torch::empty({num_tokens, num_heads, head_dim},
+    auto output = torch::zeros({num_tokens, num_heads, head_dim},
                           torch::device(query.device()).dtype(query.dtype()));
 
     auto [k_func, v_func, sdp_func] = [&] () {
         switch (head_dim) {
             case 64:  return dispatch_chunked_prefill_xmx<64,  64, 64, 8, 16, 8>(query.scalar_type());
             case 80:  return dispatch_chunked_prefill_xmx<80,  64, 64, 8, 16, 8>(query.scalar_type());
-            case 128: return dispatch_chunked_prefill_xmx<128, 32, 32, 8, 16, 8>(query.scalar_type());
+            case 128: return dispatch_chunked_prefill_xmx<128, 64, 64, 8, 16, 8>(query.scalar_type());
             default: throw std::runtime_error("unsupported head_dim, only 128, 80 and 64 are supported");
         }
     }();
 
     k_func(
-        key.data_ptr(), block_tables.data_ptr(), context_lens.data_ptr(),
-        key.stride(0), key.stride(1), block_tables.stride(0),
+        key.data_ptr(), (fp16 *)tmp_key.data_ptr(),
+        block_tables.data_ptr(), context_lens.data_ptr(),
+        key.stride(0), key.stride(1), tmp_key.stride(0), tmp_key.stride(1), block_tables.stride(0),
         batch_size, num_kv_heads, padding_context_length, query.device()
     );
 
     v_func(
-        value.data_ptr(), block_tables.data_ptr(), context_lens.data_ptr(),
-        value.stride(0), value.stride(1), block_tables.stride(0),
+        value.data_ptr(), (fp16 *)tmp_value.data_ptr(),
+        block_tables.data_ptr(), context_lens.data_ptr(),
+        value.stride(0), value.stride(1), tmp_value.stride(0), tmp_value.stride(1), block_tables.stride(0),
         batch_size, num_kv_heads, padding_context_length, query.device()
     );
 
+    // torch::Tensor k_cpu = tmp_key.to(torch::kCPU);
+    // torch::Tensor v_cpu = tmp_value.to(torch::kCPU);
+    // for (const auto& size : k_cpu.sizes()) {
+    //     std::cout << size << " ";
+    // }
+    // std::cout << std::endl;
+    // std::cout << k_cpu.slice(0, 0, 0) << std::endl;
+    // for (const auto& size : v_cpu.sizes()) {
+    //     std::cout << size << " ";
+    // }
+    // std::cout << std::endl;
+    // std::cout << v_cpu.slice(0, 0, 2) << std::endl;
+
     sdp_func(
-        query.data_ptr(), key.data_ptr(), value.data_ptr(),
+        query.data_ptr(), tmp_key.data_ptr(), tmp_value.data_ptr(),
         block_tables.data_ptr(), query_start_loc.data_ptr(), seq_lens.data_ptr(), context_lens.data_ptr(),
         tmp_output.data_ptr(), output.data_ptr(),
-        query.stride(0), query.stride(1),
-        key.stride(0), key.stride(1), key.stride(2), 
-        value.stride(0), value.stride(1), value.stride(2),
+        query.stride(0), query.stride(1), query.stride(2),
+        tmp_key.stride(0), tmp_key.stride(1), tmp_key.stride(2), 
+        tmp_value.stride(0), tmp_value.stride(1), tmp_value.stride(2),
         tmp_output.stride(0), tmp_output.stride(1),
         output.stride(0), output.stride(1),
         block_tables.stride(0),
