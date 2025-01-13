@@ -485,11 +485,11 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     block_size = value_cache.shape[2]
                     out = vllm._C.ops.chunked_prefill_xmx(query, key_cache, value_cache, prefill_meta.block_tables, prefill_meta.query_start_loc, prefill_meta.context_lens, prefill_meta.seq_lens_tensor, self.scale, block_size, prefill_meta.max_seqlen, torch.amax(prefill_meta.context_lens).item(), self.num_kv_heads)
 
-                    # print(out)
-                    # # print("------------------------------")
-                    # # print(ref_out)
-                    # import pdb
-                    # pdb.set_trace()
+                    print(out)
+                    # print("------------------------------")
+                    # print(ref_out)
+                    import pdb
+                    pdb.set_trace()
                     # print(out-ref_out)
                 elif value is None:
                     # Otherwise, by default use v2 attention forward kernel...
