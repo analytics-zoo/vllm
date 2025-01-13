@@ -33,6 +33,7 @@ list(APPEND VLLM_LINK_LIBRARIES "sycl" "OpenCL" "pthread" "m" "dl" "dnnl" "intel
 set(VLLM_EXT_SRC
     "csrc/xpu/activation_xpu.cpp"
     "csrc/xpu/attention_xpu.cpp"
+    "csrc/xpu/chunked_prefill_xpu.cpp"
     "csrc/xpu/cache_ops_xpu.cpp"
     "csrc/xpu/gemm_kernels_xpu.cpp"
     "csrc/xpu/layernorm_xpu.cpp"

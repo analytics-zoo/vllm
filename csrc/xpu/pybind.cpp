@@ -26,6 +26,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "paged_attention_gqa",
     &paged_attention_gqa,
     "PagedAttention GQA.");
+
+  ops.def(
+    "chunked_prefill_xmx",
+    &chunked_prefill_xmx,
+    "Chunked prefill implementation based on XMX.");
     
   // Activation ops
   ops.def(

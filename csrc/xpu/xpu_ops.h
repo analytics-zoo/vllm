@@ -158,3 +158,19 @@ void paged_attention_gqa(
     int64_t head_dim,
     int max_seq_len
 );
+
+
+torch::Tensor chunked_prefill_xmx(
+    torch::Tensor query,            // [num_tokens, num_heads, head_dim]
+    torch::Tensor key,              // [num_tokens, num_kv_heads * head_size]
+    torch::Tensor value,            // [num_tokens, num_kv_heads * head_size]
+    torch::Tensor block_tables,     // for chunked prefill
+    torch::Tensor query_start_loc,  // for chunked prefill
+    torch::Tensor context_lens,     // for chunked prefill
+    torch::Tensor seq_lens,         // for chunked prefill
+    float attn_scale,
+    int block_size,                 // for chunked prefill
+    int max_input_length,           // for chunked prefill
+    int max_context_length,
+    int num_kv_heads
+);
