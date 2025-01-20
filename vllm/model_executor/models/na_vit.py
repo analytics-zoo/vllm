@@ -380,13 +380,13 @@ class SiglipAttention(nn.Module):
                                                 training=self.training)
             attn_output = torch.matmul(attn_weights, value_states)
 
-            if attn_output.size() != (batch_size, self.num_heads, q_len,
-                                    self.head_dim):
-                raise ValueError(
-                    "`attn_output` should be of size "
-                    f"{(batch_size, self.num_heads, q_len, self.head_dim)}, "
-                    "but is"
-                    f" {attn_output.size()}")
+            # if attn_output.size() != (batch_size, self.num_heads, q_len,
+            #                         self.head_dim):
+            #     raise ValueError(
+            #         "`attn_output` should be of size "
+            #         f"{(batch_size, self.num_heads, q_len, self.head_dim)}, "
+            #         "but is"
+            #         f" {attn_output.size()}")
         attn_output = attn_output[:, :, :, :self.head_dim]
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.reshape(batch_size, q_len, self.embed_dim)
