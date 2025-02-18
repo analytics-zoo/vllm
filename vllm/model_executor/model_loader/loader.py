@@ -1373,7 +1373,10 @@ class IPEXLLMLowBitLoader(BaseModelLoader):
             with low_memory_init():
                 model = _initialize_model(vllm_config=vllm_config)
         # Load the real weights from the config
-        model = load_low_bit(model, model_config.low_bit_model_path)
+        local_rank = os.environ["LOCAL_RANK"]
+        load_path = os.path.join(model_config.low_bit_model_path,
+                                 str(local_rank))
+        model = load_low_bit(model, load_path)
         return model
 
 

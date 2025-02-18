@@ -1039,6 +1039,9 @@ class EngineArgs:
         if check_gguf_file(self.model):
             self.quantization = self.load_format = "gguf"
 
+        if self.low_bit_model_path is not None and self.low_bit_save_path is not None:
+            raise ValueError(f"Please do not set --low-bit-model-path and --low-bit-save-path together")
+
         # bitsandbytes quantization needs a specific model loader
         # so we make sure the quant method and the load format are consistent
         if (self.quantization == "bitsandbytes" or
