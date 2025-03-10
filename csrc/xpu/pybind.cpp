@@ -22,6 +22,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   ops.def("context_attention_forward_v2", &context_attention_forward_v2,
           "Context attention forward_v2");
 
+  ops.def("context_attention_forward_gqa", &context_attention_forward_gqa,
+          "Context attention forward_v2");
+
   ops.def(
     "paged_attention_gqa",
     &paged_attention_gqa,

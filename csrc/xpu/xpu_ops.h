@@ -56,6 +56,14 @@ torch::Tensor context_attention_forward_v2(
     torch::Tensor seq_lens, torch::Tensor context_lens, int max_input_length,
     int max_context_length);
 
+torch::Tensor context_attention_forward_gqa(
+    torch::Tensor query,  // [num_tokens, num_kv_head, head_dim]
+    torch::Tensor key,    // [num_tokens, num_kv_heads * head_size]
+    torch::Tensor value,  // [num_tokens, num_kv_heads * head_size]
+    torch::Tensor block_tables, torch::Tensor query_start_loc,
+    torch::Tensor seq_lens, torch::Tensor context_lens, int max_input_length,
+    int max_context_length);
+
 void copy_blocks(
     std::vector<torch::Tensor> &key_caches,
     std::vector<torch::Tensor> &value_caches,
