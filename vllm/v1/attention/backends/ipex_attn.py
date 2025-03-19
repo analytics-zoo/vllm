@@ -11,6 +11,8 @@ from vllm.attention.ops.paged_attn import (PagedAttention,
                                            PagedAttentionMetadata)
 from vllm.attention.backends.ipex_attn import use_gqa_kernel
 import os
+# TODO: change this import logic
+import intel_extension_for_pytorch as ipex
 
 
 class IPEXAttentionBackend(AttentionBackend):
@@ -23,6 +25,7 @@ class IPEXAttentionBackend(AttentionBackend):
     def get_name() -> str:
         return "IPEX_V1"
 
+    # TODO: check this
     @staticmethod
     def get_impl_cls() -> Type["IPEXAttentionImpl"]:
         return IPEXAttentionImpl
@@ -42,8 +45,9 @@ class IPEXAttentionBackend(AttentionBackend):
             # raise ValueError("Block size must be a multiple of 16.")
         # This needs to be changed...
         # return (2, num_blocks, block_size, num_kv_heads, head_size)
-        return PagedAttention.get_kv_cache_shape(num_blocks, block_size,
-                                                 num_kv_heads, head_size)
+        # return PagedAttention.get_kv_cache_shape(num_blocks, block_size,
+                                                #  num_kv_heads, head_size)
+        return (2, num_blocks, block_size, num_kv_heads, head_size)
 
 
 
@@ -228,53 +232,97 @@ def ipex_llm_chunked_prefill(
     key = key.view(-1, num_kv_heads, head_size)
     value = value.view(-1, num_kv_heads, head_size)
 
-    using_gqa_kernel = use_gqa_kernel(num_heads, num_kv_heads, head_size, logits_soft_cap)
+    # using_gqa_kernel = use_gqa_kernel(num_heads, num_kv_heads, head_size, logits_soft_cap)
 
+    ######################## The following logic is based on IPEX's operations ##############################
+    # TODO: change block operations
 
-    if using_gqa_kernel:
-        key_cache, value_cache = split_kv_cache_ipexllm(
-                kv_cache, num_kv_heads, head_size)
-        ipex_ops.reshape_and_cache_ipexllm(
-            key[:num_actual_tokens],
-            value[:num_actual_tokens],
-            key_cache,
-            value_cache,
-            attn_metadata.slot_mapping.flatten(),
-            kv_cache_dtype,
-            k_scale,
-            v_scale,
-        )
-    else:
-        key_cache, value_cache = split_kv_cache(
-            kv_cache, num_kv_heads, head_size)   
-        ipex_ops.reshape_and_cache(
-            key[:num_actual_tokens],
-            value[:num_actual_tokens],
-            key_cache,
-            value_cache,
-            attn_metadata.slot_mapping.flatten(),
-            kv_cache_dtype,
-            k_scale,
-            v_scale,
-        )
-    # Invoke chunked prefill method...
-    import vllm._C.ops
-    assert head_size == 128 or head_size == 64
-    value = os.environ.get('USE_CONTEXT_V1')
-    query_len = attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
-    seq_len = attn_metadata.seq_start_loc[1:] - attn_metadata.seq_start_loc[:-1]
-    context_len = seq_len - query_len
-    if using_gqa_kernel:
-        # if using_gqa_kernel, then only the v1 kernel can be used
-        out = vllm._C.ops.context_attention_forward_v1(query[:num_actual_tokens], key_cache, value_cache, attn_metadata.block_table, attn_metadata.query_start_loc, seq_len, context_len, attn_metadata.max_seq_len, torch.amax(context_len).item())
-    elif value is None:
-        # Otherwise, by default use v2 attention forward kernel...
-        out = vllm._C.ops.context_attention_forward_v2(query[:num_actual_tokens], key_cache, value_cache, attn_metadata.block_table, attn_metadata.query_start_loc, seq_len, context_len, attn_metadata.max_seq_len, torch.amax(context_len).item(), torch.amax(query_len).item())
-    else:
-        out = vllm._C.ops.context_attention_forward_v1(query[:num_actual_tokens], key_cache, value_cache, attn_metadata.block_table, attn_metadata.query_start_loc, seq_len, context_len, attn_metadata.max_seq_len, torch.amax(context_len).item())
+    # Based on ipex's kv_cache shape
+    key_cache, value_cache = kv_cache.unbind(0)
     
-    # output[:num_actual_tokens] = out
-    output[:num_actual_tokens] = out.view(out.shape[0], -1)
+    # TODO: change to use the correct method
+    ipex.llm.modules.PagedAttention.reshape_and_cache_flash(
+        key[:num_actual_tokens],
+        value[:num_actual_tokens],
+        key_cache,
+        value_cache,
+        attn_metadata.slot_mapping
+    )
+    # ipex_ops.reshape_and_cache_flash(
+    #     key[:num_actual_tokens],
+    #     value[:num_actual_tokens],
+    #     key_cache,
+    #     value_cache,
+    #     attn_metadata.slot_mapping,
+    #     self.kv_cache_dtype,
+    #     layer._k_scale,
+    #     layer._v_scale,
+    # )
+    torch.ops.torch_ipex.chunked_prefill(
+        query[:num_actual_tokens].contiguous(),
+        key_cache,
+        value_cache,
+        output[:num_actual_tokens],
+        attn_metadata.query_start_loc,
+        attn_metadata.seq_start_loc,
+        None,
+        attn_metadata.block_table,
+        alibi_slopes,
+        attn_metadata.max_query_len,
+        attn_metadata.max_seq_len,
+        0.0,
+        scale,
+        False,
+        True,
+        False,
+        None,
+    )
+
+    ####################### END ############################
+    # if using_gqa_kernel:
+    #     key_cache, value_cache = split_kv_cache_ipexllm(
+    #             kv_cache, num_kv_heads, head_size)
+    #     ipex_ops.reshape_and_cache_ipexllm(
+    #         key[:num_actual_tokens],
+    #         value[:num_actual_tokens],
+    #         key_cache,
+    #         value_cache,
+    #         attn_metadata.slot_mapping.flatten(),
+    #         kv_cache_dtype,
+    #         k_scale,
+    #         v_scale,
+    #     )
+    # else:
+    #     key_cache, value_cache = split_kv_cache(
+    #         kv_cache, num_kv_heads, head_size)   
+    #     ipex_ops.reshape_and_cache(
+    #         key[:num_actual_tokens],
+    #         value[:num_actual_tokens],
+    #         key_cache,
+    #         value_cache,
+    #         attn_metadata.slot_mapping.flatten(),
+    #         kv_cache_dtype,
+    #         k_scale,
+    #         v_scale,
+    #     )
+    # Invoke chunked prefill method...
+    # import vllm._C.ops
+    # assert head_size == 128 or head_size == 64
+    # value = os.environ.get('USE_CONTEXT_V1')
+    # query_len = attn_metadata.query_start_loc[1:] - attn_metadata.query_start_loc[:-1]
+    # seq_len = attn_metadata.seq_start_loc[1:] - attn_metadata.seq_start_loc[:-1]
+    # context_len = seq_len - query_len
+    # if using_gqa_kernel:
+    #     # if using_gqa_kernel, then only the v1 kernel can be used
+    #     out = vllm._C.ops.context_attention_forward_v1(query[:num_actual_tokens], key_cache, value_cache, attn_metadata.block_table, attn_metadata.query_start_loc, seq_len, context_len, attn_metadata.max_seq_len, torch.amax(context_len).item())
+    # elif value is None:
+    #     # Otherwise, by default use v2 attention forward kernel...
+    #     out = vllm._C.ops.context_attention_forward_v2(query[:num_actual_tokens], key_cache, value_cache, attn_metadata.block_table, attn_metadata.query_start_loc, seq_len, context_len, attn_metadata.max_seq_len, torch.amax(context_len).item(), torch.amax(query_len).item())
+    # else:
+    #     out = vllm._C.ops.context_attention_forward_v1(query[:num_actual_tokens], key_cache, value_cache, attn_metadata.block_table, attn_metadata.query_start_loc, seq_len, context_len, attn_metadata.max_seq_len, torch.amax(context_len).item())
+    
+    # # output[:num_actual_tokens] = out
+    # output[:num_actual_tokens] = out.view(out.shape[0], -1)
 
 
 

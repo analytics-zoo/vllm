@@ -325,18 +325,18 @@ class ipex_ops:
     def copy_blocks(key_caches: List[torch.Tensor],
                     value_caches: List[torch.Tensor],
                     block_mapping) -> None:
-        # torch.xpu.copy_blocks(  # type: ignore
-        #     key_caches,
-        #     value_caches,
-        #     block_mapping,
-        # )
-        vllm._C.cache_ops.copy_blocks(key_caches, value_caches, block_mapping)
+        torch.xpu.copy_blocks(  # type: ignore
+            key_caches,
+            value_caches,
+            block_mapping,
+        )
+        # vllm._C.cache_ops.copy_blocks(key_caches, value_caches, block_mapping)
 
     @staticmethod
     def swap_blocks(src: torch.Tensor, dst: torch.Tensor,
                     block_mapping: torch.Tensor) -> None:
-        vllm._C.cache_ops.swap_blocks(key_caches, value_caches, block_mapping)
-        # torch.xpu.swap_blocks(src, dst, block_mapping)  # type: ignore
+        # vllm._C.cache_ops.swap_blocks(key_caches, value_caches, block_mapping)
+        torch.xpu.swap_blocks(src, dst, block_mapping)  # type: ignore
 
     @staticmethod
     def bgmv_shrink(inputs: torch.Tensor,
