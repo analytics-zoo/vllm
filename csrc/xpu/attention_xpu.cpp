@@ -866,7 +866,7 @@ void context_attention_kernel_v1(
   queue.submit(cgf);
 }
 
-template <typename T, int BLOCK_SIZE, int GS, int HD>
+template <typename T, int BLOCK_SIZE, int HD>
 void context_attention_kernel_v2(
     void* query, void* key, void* value, const void* block_tables,
     const float scale, const void* query_start_loc, const void* seq_lens,
@@ -2552,7 +2552,7 @@ torch::Tensor context_attention_forward_v2(
     case 128:
       switch(block_size) {
         case 8:
-          vllm::context_attention_kernel_v2<sycl::half, 8, 32, 128>(
+          vllm::context_attention_kernel_v2<sycl::half, 8, 128>(
           query.data_ptr(), key.data_ptr(), value.data_ptr(),
           block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
           seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
@@ -2566,7 +2566,7 @@ torch::Tensor context_attention_forward_v2(
           max_context_length, max_q_length);
           break;
         case 16:
-          vllm::context_attention_kernel_v2<sycl::half, 16, 32, 128>(
+          vllm::context_attention_kernel_v2<sycl::half, 16, 128>(
           query.data_ptr(), key.data_ptr(), value.data_ptr(),
           block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
           seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
@@ -2580,7 +2580,7 @@ torch::Tensor context_attention_forward_v2(
           max_context_length, max_q_length);
           break;
         case 32:
-          vllm::context_attention_kernel_v2<sycl::half, 32, 32, 128>(
+          vllm::context_attention_kernel_v2<sycl::half, 32, 128>(
           query.data_ptr(), key.data_ptr(), value.data_ptr(),
           block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
           seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
@@ -2594,7 +2594,7 @@ torch::Tensor context_attention_forward_v2(
           max_context_length, max_q_length);
           break;
         case 64:
-          vllm::context_attention_kernel_v2<sycl::half, 64, 32, 128>(
+          vllm::context_attention_kernel_v2<sycl::half, 64, 128>(
           query.data_ptr(), key.data_ptr(), value.data_ptr(),
           block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
           seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
@@ -2613,7 +2613,7 @@ torch::Tensor context_attention_forward_v2(
     case 64:
       switch(block_size) {
         case 8:
-          vllm::context_attention_kernel_v2<sycl::half, 8, 32, 64>(
+          vllm::context_attention_kernel_v2<sycl::half, 8, 64>(
           query.data_ptr(), key.data_ptr(), value.data_ptr(),
           block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
           seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
@@ -2627,7 +2627,7 @@ torch::Tensor context_attention_forward_v2(
           max_context_length, max_q_length);
           break;
         case 16:
-          vllm::context_attention_kernel_v2<sycl::half, 16, 32, 64>(
+          vllm::context_attention_kernel_v2<sycl::half, 16, 64>(
           query.data_ptr(), key.data_ptr(), value.data_ptr(),
           block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
           seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
@@ -2641,7 +2641,7 @@ torch::Tensor context_attention_forward_v2(
           max_context_length, max_q_length);
           break;
         case 32:
-          vllm::context_attention_kernel_v2<sycl::half, 32, 32, 64>(
+          vllm::context_attention_kernel_v2<sycl::half, 32, 64>(
           query.data_ptr(), key.data_ptr(), value.data_ptr(),
           block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
           seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
@@ -2655,7 +2655,7 @@ torch::Tensor context_attention_forward_v2(
           max_context_length, max_q_length);
           break;
         case 64:
-          vllm::context_attention_kernel_v2<sycl::half, 64, 32, 64>(
+          vllm::context_attention_kernel_v2<sycl::half, 64, 64>(
           query.data_ptr(), key.data_ptr(), value.data_ptr(),
           block_tables.data_ptr(), attn_scale, query_start_loc.data_ptr(),
           seq_lens.data_ptr(), context_lens.data_ptr(), block_size, x,
