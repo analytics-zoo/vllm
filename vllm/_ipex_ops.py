@@ -84,10 +84,10 @@ class ipex_ops:
         # todo: ipex will refactor namespace
         import vllm._C.ops
         vllm._C.ops.paged_attention_v1(out, query,
-                                     key_cache.view_as(value_cache),
-                                     value_cache, num_kv_heads, scale,
-                                     block_tables, context_lens, block_size,
-                                     max_context_len, alibi_slopes, kv_cache_dtype, k_scale, logits_soft_cap)
+                                       key_cache.view_as(value_cache),
+                                       value_cache, num_kv_heads, scale,
+                                       block_tables, context_lens, block_size,
+                                       max_context_len, alibi_slopes, kv_cache_dtype, k_scale, logits_soft_cap)
 
     @staticmethod
     def paged_attention_v2(
@@ -229,13 +229,16 @@ class ipex_ops:
         gen_: torch.Generator,
         logits_soft_cap: float,
     ) -> None:
-        pass
-
-        # ipex.llm.functional.varlen_attention(query, key, value, out, seqlen_q,
-        #                                      seqlen_k, max_seqlen_q,
-        #                                      max_seqlen_k, pdropout,
-        #                                      softmax_scale, zero_tensors,
-        #                                      is_causal, return_softmax, gen_)
+        # pass
+        ipex.llm.functional.varlen_attention(query.contiguous(),
+                                             key.contiguous(),
+                                             value.contiguous(), out,
+                                             seqlen_q.int(), seqlen_k.int(),
+                                             max_seqlen_q, max_seqlen_k,
+                                             pdropout, softmax_scale,
+                                             zero_tensors, is_causal,
+                                             return_softmax, gen_,
+                                             logits_soft_cap)
 
     @staticmethod
     def reshape_and_cache(
@@ -297,29 +300,45 @@ class ipex_ops:
         p_dropout: float,
         softmax_scale: float,
         zero_tensors: bool,
-        is_caual: bool,
+        is_casual: bool,
         return_softmax: bool,
         gen_: Optional[torch.Generator],
     ):
-        return torch.ops.torch_ipex.chunked_prefill(
+        return ipex.llm.modules.PagedAttention.flash_attn_varlen_func(
+            output,
             query.contiguous(),
             key_cache,
             value_cache,
-            output,
             cu_seqlens_q,
             cu_seqlens_k,
-            seq_used_k,
-            block_table,
-            alibi_slopes,
             max_seqlen_q,
             max_seqlen_k,
-            p_dropout,
             softmax_scale,
-            zero_tensors,
-            is_caual,
-            return_softmax,
-            gen_,
+            is_casual,
+            block_table,
+            alibi_slopes,
+            k_scale=1.0,
+            v_scale=1.0,
         )
+        # return torch.ops.torch_ipex.chunked_prefill(
+        #     query.contiguous(),
+        #     key_cache,
+        #     value_cache,
+        #     output,
+        #     cu_seqlens_q,
+        #     cu_seqlens_k,
+        #     seq_used_k,
+        #     block_table,
+        #     alibi_slopes,
+        #     max_seqlen_q,
+        #     max_seqlen_k,
+        #     p_dropout,
+        #     softmax_scale,
+        #     zero_tensors,
+        #     is_caual,
+        #     return_softmax,
+        #     gen_,
+        # )
 
     @staticmethod
     def copy_blocks(key_caches: List[torch.Tensor],

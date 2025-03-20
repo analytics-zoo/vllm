@@ -241,24 +241,25 @@ def ipex_llm_chunked_prefill(
     key_cache, value_cache = kv_cache.unbind(0)
     
     # TODO: change to use the correct method
-    ipex.llm.modules.PagedAttention.reshape_and_cache_flash(
-        key[:num_actual_tokens],
-        value[:num_actual_tokens],
-        key_cache,
-        value_cache,
-        attn_metadata.slot_mapping
-    )
-    # ipex_ops.reshape_and_cache_flash(
+    # ipex.llm.modules.PagedAttention.reshape_and_cache_flash(
     #     key[:num_actual_tokens],
     #     value[:num_actual_tokens],
     #     key_cache,
     #     value_cache,
-    #     attn_metadata.slot_mapping,
-    #     self.kv_cache_dtype,
-    #     layer._k_scale,
-    #     layer._v_scale,
+    #     attn_metadata.slot_mapping
     # )
-    torch.ops.torch_ipex.chunked_prefill(
+    ipex_ops.reshape_and_cache_flash(
+        key[:num_actual_tokens],
+        value[:num_actual_tokens],
+        key_cache,
+        value_cache,
+        attn_metadata.slot_mapping,
+        kv_cache_dtype,
+        k_scale,
+        v_scale,
+    )
+    # torch.ops.torch_ipex.chunked_prefill(
+    ipex_ops.chunked_prefill(
         query[:num_actual_tokens].contiguous(),
         key_cache,
         value_cache,
