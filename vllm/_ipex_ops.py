@@ -229,14 +229,16 @@ class ipex_ops:
         gen_: torch.Generator,
         logits_soft_cap: float,
     ) -> None:
-        pass
-
-        # ipex.llm.functional.varlen_attention(query, key, value, out, seqlen_q,
-        #                                      seqlen_k, max_seqlen_q,
-        #                                      max_seqlen_k, pdropout,
-        #                                      softmax_scale, zero_tensors,
-        #                                      is_causal, return_softmax, gen_)
-
+        ipex.llm.functional.varlen_attention(query.contiguous(),
+                                             key.contiguous(),
+                                             value.contiguous(), out,
+                                             seqlen_q.int(), seqlen_k.int(),
+                                             max_seqlen_q, max_seqlen_k,
+                                             pdropout, softmax_scale,
+                                             zero_tensors, is_causal,
+                                             return_softmax, gen_,
+                                             logits_soft_cap)
+                                             
     @staticmethod
     def reshape_and_cache(
         key: torch.Tensor,
@@ -297,7 +299,7 @@ class ipex_ops:
         p_dropout: float,
         softmax_scale: float,
         zero_tensors: bool,
-        is_caual: bool,
+        is_casual: bool,
         return_softmax: bool,
         gen_: Optional[torch.Generator],
     ):
@@ -316,7 +318,7 @@ class ipex_ops:
             p_dropout,
             softmax_scale,
             zero_tensors,
-            is_caual,
+            is_casual,
             return_softmax,
             gen_,
         )

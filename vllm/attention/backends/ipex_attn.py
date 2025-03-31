@@ -414,70 +414,76 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                         att_masks = [None] * len(prefill_meta.seq_lens)
                     prefill_meta.attn_bias = att_masks
 
-                # output = torch.empty(
-                #     (num_tokens, self.num_heads, self.head_size),
-                #     dtype=query.dtype,
-                #     device=query.device)
-                # ipex_ops.varlen_attention(query,
-                #                           key,
-                #                           value,
-                #                           output,
-                #                           attn_metadata.seqlen_q,
-                #                           attn_metadata.seqlen_q,
-                #                           attn_metadata.max_seqlen,
-                #                           attn_metadata.max_seqlen,
-                #                           pdropout=0.0,
-                #                           softmax_scale=self.scale,
-                #                           zero_tensors=False,
-                #                           is_causal=True,
-                #                           return_softmax=False,
-                #                           gen_=None)
-
                 output = torch.empty(
-                            (num_tokens, self.num_heads, self.head_size),
-                            dtype=query.dtype, device=query.device)
-                query = query.movedim(0, query.dim() - 2)
-                key = key.movedim(0, key.dim() - 2)
-                value = value.movedim(0, value.dim() - 2)
-                import math
-                scale = 1 / math.sqrt(self.head_size) if self.scale is None else self.scale
-                start = 0
-                for seq_len, mask in zip(prefill_meta.seq_lens,
-                                        prefill_meta.attn_bias):
-                    end = start + seq_len
-                    if self.alibi_slopes is None and use_sdp_causal(self.head_size, query, self.logits_soft_cap):
-                        import xe_addons
-                        if mask is not None:
-                            mask = mask.unsqueeze(0)
-                        if self.logits_soft_cap == 0 or self.head_size != 256:
-                            sub_out = xe_addons.sdp_causal(
-                                query[None, :, start:end, :].contiguous(),
-                                key[None, :, start:end, :].contiguous(),
-                                value[None, :, start:end, :].contiguous(),
-                                mask,
-                                scale).squeeze(0).movedim(
-                                    query.dim() - 2, 0)
-                        else:
-                            sub_out = xe_addons.gemma2_sdp_causal(
-                                query[None, :, start:end, :].contiguous(),
-                                key[None, :, start:end, :].contiguous(),
-                                value[None, :, start:end, :].contiguous(),
-                                mask,
-                                self.logits_soft_cap,
-                                self.scale).squeeze(0).movedim(
-                                    query.dim() - 2, 0)                            
-                    else:
-                        sub_out = torch.nn.functional.scaled_dot_product_attention(
-                            query[None, :, start:end, :],
-                            key[None, :, start:end, :],
-                            value[None, :, start:end, :],
-                            attn_mask=mask,
-                            dropout_p=0.0,
-                            is_causal=not self.need_mask,
-                            scale=self.scale).squeeze(0).movedim(
-                                query.dim() - 2, 0)
-                    output[start:end, :, :] = sub_out
-                    start = end
+                    (num_tokens, self.num_heads, self.head_size),
+                    dtype=query.dtype,
+                    device=query.device)
+                    
+                tmp = [0]
+                tmp.extend(prefill_meta.seq_lens)
+                seqlen = torch.tensor(tmp)
+                seqlen_q = torch.cumsum(seqlen, dim=0).to(device=query.device)
+                ipex_ops.varlen_attention(query,
+                                          key,
+                                          value,
+                                          output,
+                                          seqlen_q,
+                                          seqlen_q,
+                                          prefill_meta.max_seqlen,
+                                          prefill_meta.max_seqlen,
+                                          pdropout=0.0,
+                                          softmax_scale=self.scale,
+                                          zero_tensors=False,
+                                          is_causal=True,
+                                          return_softmax=False,
+                                          gen_=None,
+                                          logits_soft_cap=self.logits_soft_cap)
+
+                # output = torch.empty(
+                #             (num_tokens, self.num_heads, self.head_size),
+                #             dtype=query.dtype, device=query.device)
+                # query = query.movedim(0, query.dim() - 2)
+                # key = key.movedim(0, key.dim() - 2)
+                # value = value.movedim(0, value.dim() - 2)
+                # import math
+                # scale = 1 / math.sqrt(self.head_size) if self.scale is None else self.scale
+                # start = 0
+                # for seq_len, mask in zip(prefill_meta.seq_lens,
+                #                         prefill_meta.attn_bias):
+                #     end = start + seq_len
+                #     if self.alibi_slopes is None and use_sdp_causal(self.head_size, query, self.logits_soft_cap):
+                #         import xe_addons
+                #         if mask is not None:
+                #             mask = mask.unsqueeze(0)
+                #         if self.logits_soft_cap == 0 or self.head_size != 256:
+                #             sub_out = xe_addons.sdp_causal(
+                #                 query[None, :, start:end, :].contiguous(),
+                #                 key[None, :, start:end, :].contiguous(),
+                #                 value[None, :, start:end, :].contiguous(),
+                #                 mask,
+                #                 scale).squeeze(0).movedim(
+                #                     query.dim() - 2, 0)
+                #         else:
+                #             sub_out = xe_addons.gemma2_sdp_causal(
+                #                 query[None, :, start:end, :].contiguous(),
+                #                 key[None, :, start:end, :].contiguous(),
+                #                 value[None, :, start:end, :].contiguous(),
+                #                 mask,
+                #                 self.logits_soft_cap,
+                #                 self.scale).squeeze(0).movedim(
+                #                     query.dim() - 2, 0)                            
+                #     else:
+                #         sub_out = torch.nn.functional.scaled_dot_product_attention(
+                #             query[None, :, start:end, :],
+                #             key[None, :, start:end, :],
+                #             value[None, :, start:end, :],
+                #             attn_mask=mask,
+                #             dropout_p=0.0,
+                #             is_causal=not self.need_mask,
+                #             scale=self.scale).squeeze(0).movedim(
+                #                 query.dim() - 2, 0)
+                #     output[start:end, :, :] = sub_out
+                #     start = end
             else:
                 # prefix-enabled attention
                 if self.num_kv_heads != self.num_heads:
