@@ -412,6 +412,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
 
                 flag = os.getenv("IPEX_LLM_PREFILL_VARLEN_BACKEND", None)
                 if flag is not None:
+                    logger.info(f"Using varlen_attention for prefilling.")
                     output = torch.empty(
                         (num_tokens, self.num_heads, self.head_size),
                         dtype=query.dtype,
