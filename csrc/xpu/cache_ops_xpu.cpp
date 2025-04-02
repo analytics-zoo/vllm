@@ -11,6 +11,8 @@
 #include <torch/extension.h>
 #include "utils.h"
 
+using fp16 = sycl::half;
+
 template <typename scalar_t>
 void reshape_and_cache_kernel(
     const scalar_t* __restrict__ key, // [num_tokens, num_heads, head_size]
@@ -575,77 +577,115 @@ void gather_cached_kv(
       });
 }
 
-template <typename scalar_t>
+// scalar_t is key.scalar_type() -> half
+template <typename scalar_t, const int HD>
 void reshape_and_cache_ipexllm_kernel_fp8(
     const scalar_t* __restrict__ key,    // [num_tokens, num_heads, head_size]
     const scalar_t* __restrict__ value,  // [num_tokens, num_heads, head_size]
-    scalar_t* __restrict__ key_cache,  // [num_blocks, num_kv_heads, block_size,
+    uint8_t * __restrict__ key_cache,  // [num_blocks, num_kv_heads, block_size,
                                        // head_size]
-    scalar_t* __restrict__ value_cache,        // [num_blocks, num_kv_heads,
+    uint8_t * __restrict__ value_cache,        // [num_blocks, num_kv_heads,
                                                // block_size, head_size]
     const int64_t* __restrict__ slot_mapping,  // [num_tokens]
-    const int key_stride, const int value_stride, const int num_heads,
+    const int key_stride, const int value_stride, 
+    const int key_head_stride, const int value_head_stride,
+    const int num_heads,
     const int head_size, const int block_size, const int x,
     const sycl::nd_item<3>& item_ct1) {
-  const int64_t token_idx = item_ct1.get_group(2);
+  
+  //                      New Implementation                      //
+  const size_t token_idx = item_ct1.get_global_id(0);
+  const size_t head_idx = item_ct1.get_global_id(1);
   const int64_t slot_idx = slot_mapping[token_idx];
   if (slot_idx < 0) {
-    // Padding token that should be ignored.
     return;
   }
-
   const int64_t block_idx = slot_idx / block_size;
   const int64_t block_offset = slot_idx % block_size;
+  // The thread is responsible for the HD elements within key/value
+  const scalar_t * key_head = key + token_idx * key_stride + head_idx * key_head_stride;
 
-  const int n = num_heads * head_size;
-  for (int i = item_ct1.get_local_id(2); i < n;
-       i += item_ct1.get_local_range(2)) {
-    const int64_t src_key_idx = token_idx * key_stride + i;
-    const int64_t src_value_idx = token_idx * value_stride + i;
+  const scalar_t * value_head = value + token_idx * value_stride + head_idx * value_head_stride;
 
-    const int head_idx = i / head_size;
-    const int head_offset = i % head_size;
+  uint8_t * key_output_head = key_cache + block_idx * num_heads * head_size * block_size + 
+      head_idx * head_size * block_size + block_offset * head_size;
+  uint8_t * value_output_head = value_cache + block_idx * num_heads * head_size * block_size + 
+      head_idx * head_size * block_size + block_offset * head_size;
+  
+  // TODO: not sure if this works...
+  simd<fp16, HD> key_row = block_load<scalar_t, HD>(key_head);
+  simd<uint8_t, HD> key_result = quantize_key_row<HD>(key_row);
+  block_store<uint8_t, HD>(key_output_head, key_result);
 
-    // const int64_t tgt_key_idx =
-    //     block_idx * num_heads * (head_size / x) * block_size * x +
-    //     head_idx * (head_size / x) * block_size * x + x_idx * block_size * x
-    //     + block_offset * x + x_offset;
+  simd<fp16, HD> value_row = block_load<scalar_t, HD>(value_head);
+  simd<uint8_t, HD> value_result = quantize_key_row<HD>(value_row);
+  block_store<uint8_t, HD>(value_output_head, value_result);
 
-    // const int64_t tgt_value_idx =
-    //     block_idx * num_heads * head_size * block_size +
-    //     head_idx * head_size * block_size + head_offset * block_size +
-    //     block_offset;
+  //                      New Implementation ends...              //
 
-    const int64_t tgt_value_idx =
-        block_idx * num_heads * head_size * block_size +
-        head_idx * head_size * block_size + block_offset * head_size +
-        head_offset;
-    const int64_t tgt_key_idx = tgt_value_idx;
-    key_cache[tgt_key_idx] = key[src_key_idx];
-    value_cache[tgt_value_idx] = value[src_value_idx];
-  }
+  // const int64_t token_idx = item_ct1.get_group(2);
+  // const int64_t slot_idx = slot_mapping[token_idx];
+  // if (slot_idx < 0) {
+  //   // Padding token that should be ignored.
+  //   return;
+  // }
+
+  // const int64_t block_idx = slot_idx / block_size;
+  // const int64_t block_offset = slot_idx % block_size;
+
+  // const int n = num_heads * head_size;
+  // for (int i = item_ct1.get_local_id(2); i < n;
+  //      i += item_ct1.get_local_range(2)) {
+  //   const int64_t src_key_idx = token_idx * key_stride + i;
+  //   const int64_t src_value_idx = token_idx * value_stride + i;
+
+  //   const int head_idx = i / head_size;
+  //   const int head_offset = i % head_size;
+
+  //   // const int64_t tgt_key_idx =
+  //   //     block_idx * num_heads * (head_size / x) * block_size * x +
+  //   //     head_idx * (head_size / x) * block_size * x + x_idx * block_size * x
+  //   //     + block_offset * x + x_offset;
+
+  //   // const int64_t tgt_value_idx =
+  //   //     block_idx * num_heads * head_size * block_size +
+  //   //     head_idx * head_size * block_size + head_offset * block_size +
+  //   //     block_offset;
+
+  //   const int64_t tgt_value_idx =
+  //       block_idx * num_heads * head_size * block_size +
+  //       head_idx * head_size * block_size + block_offset * head_size +
+  //       head_offset;
+  //   const int64_t tgt_key_idx = tgt_value_idx;
+  //   key_cache[tgt_key_idx] = key[src_key_idx];
+  //   value_cache[tgt_value_idx] = value[src_value_idx];
+  // }
 }
 
-template <typename scalar_t>
+template <typename scalar_t, const int HD>
 void call_reshape_and_cache_ipexllm_kernel_fp8(
     const scalar_t* __restrict__ key, const scalar_t* __restrict__ value,
     scalar_t* __restrict__ key_cache, scalar_t* __restrict__ value_cache,
     const int64_t* __restrict__ slot_mapping, const int num_tokens,
-    const int key_stride, const int value_stride, const int num_heads,
+    const int key_stride, const int value_stride, 
+    const int key_head_stride, const int value_head_stride,
+    const int num_heads,
     const int head_size, const int block_size, const int x) {
   using sycl_t = vllm::xpu::SyclTypeTrait<scalar_t>::Type;
-  sycl::range<3> grid(1, 1, num_tokens);
-  sycl::range<3> block(1, 1, std::min(num_heads * head_size, 512));
+  // TODO: change this
+  sycl::range<3> grid(num_tokens, num_heads, 1);
+  sycl::range<3> block(1, 1, 1);
   auto& queue = vllm::xpu::vllmGetQueue();
   queue.submit([&](sycl::handler& cgh) {
     cgh.parallel_for(
-        sycl::nd_range<3>(grid * block, block), [=](sycl::nd_item<3> item_ct1) {
-          reshape_and_cache_ipexllm_kernel<sycl_t>(
+        sycl::nd_range<3>(grid * block, block), [=](sycl::nd_item<3> item_ct1) SYCL_ESIMD_KERNEL {
+          reshape_and_cache_ipexllm_kernel_fp8<sycl_t, HD>(
               (const sycl_t* __restrict__)key,
               (const sycl_t* __restrict__)value,
-              (sycl_t* __restrict__)key_cache,
-              (sycl_t* __restrict__)value_cache, slot_mapping, key_stride,
-              value_stride, num_heads, head_size, block_size, x, item_ct1);
+              (uint8_t* __restrict__)key_cache,
+              (uint8_t* __restrict__)value_cache, slot_mapping, key_stride,
+              value_stride, key_head_stride, value_head_stride,
+              num_heads, head_size, block_size, x, item_ct1);
         });
   });
 }
@@ -666,13 +706,17 @@ void reshape_and_cache_ipexllm_fp8(torch::Tensor& key, torch::Tensor& value,
   int key_stride = key.stride(0);
   int value_stride = value.stride(0);
 
+  int key_head_stride = key.stride(1);
+  int value_head_stride = value.strie(1);
+
   VLLM_XPU_DISPATCH_FLOATING_TYPES(
       key.scalar_type(), "call_reshape_and_cache_ipexllm_kernel_fp8", [&] {
-        call_reshape_and_cache_ipexllm_kernel_fp8<scalar_t>(
+        call_reshape_and_cache_ipexllm_kernel_fp8<scalar_t, 128>(
             key.data_ptr<scalar_t>(), value.data_ptr<scalar_t>(),
-            key_cache.data_ptr<scalar_t>(), value_cache.data_ptr<scalar_t>(),
+            key_cache.data_ptr<uint8_t>(), value_cache.data_ptr<uint8_t>(),
             slot_mapping.data_ptr<int64_t>(), num_tokens, key_stride,
-            value_stride, num_heads, head_size, block_size, x);
+            value_stride, key_head_stride, value_head_stride,
+            num_heads, head_size, block_size, x);
       });
 }
 
