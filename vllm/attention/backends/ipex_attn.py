@@ -264,10 +264,11 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             raise ValueError(
                 f"Head size {head_size} is not supported by PagedAttention. "
                 f"Supported head sizes are: {supported_head_sizes}.")
-        if kv_cache_dtype != "auto":
-            raise NotImplementedError(
-                "IPEX backend does not support FP8 KV cache. "
-                "Please use xFormers backend instead.")
+        # TODO: file more strict check
+        # if kv_cache_dtype != "auto":
+        #     raise NotImplementedError(
+        #         "IPEX backend does not support FP8 KV cache. "
+        #         "Please use xFormers backend instead.")
 
     def split_kv_cache(
         self,
