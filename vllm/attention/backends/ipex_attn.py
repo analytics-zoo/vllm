@@ -12,6 +12,10 @@ from vllm.attention.backends.utils import CommonAttentionState
 from vllm.attention.ops.paged_attn import (PagedAttention,
                                            PagedAttentionMetadata)
 
+from vllm.logger import init_logger
+logger = init_logger('vllm.attention.backends.ipex_attn')
+from vllm.utils import print_info_once, print_warning_once
+
 _PARTITION_SIZE = 512
 
 
@@ -268,6 +272,12 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             raise NotImplementedError(
                 "IPEX backend does not support FP8 KV cache. "
                 "Please use xFormers backend instead.")
+        
+        self.ipex_varlen_attn = False
+        flag = os.getenv("IPEX_LLM_PREFILL_VARLEN_BACKEND", None)
+        if flag is not None:
+            self.ipex_varlen_attn = True
+            print_info_once(f"Using varlen_attention for prefilling.")
 
     def split_kv_cache(
         self,
@@ -410,9 +420,8 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                         att_masks = [None] * len(prefill_meta.seq_lens)
                     prefill_meta.attn_bias = att_masks
 
-                flag = os.getenv("IPEX_LLM_PREFILL_VARLEN_BACKEND", None)
-                if flag is not None:
-                    logger.info(f"Using varlen_attention for prefilling.")
+                
+                if self.ipex_varlen_attn:
                     output = torch.empty(
                         (num_tokens, self.num_heads, self.head_size),
                         dtype=query.dtype,
