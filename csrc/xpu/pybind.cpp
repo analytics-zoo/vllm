@@ -85,6 +85,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     &reshape_and_cache_ipexllm,
     "Reshape the key and value tensors and cache them for ipex_llm");
 
+  cache_ops.def(
+    "reshape_and_cache_ipexllm_fp8",
+    &reshape_and_cache_ipexllm_fp8,
+    "Reshape the key and value tensors and cache them for ipex_llm with fp8");
+
   // Quant
   ops.def(
     "awq_dequantize",
