@@ -621,7 +621,7 @@ void reshape_and_cache_ipexllm_kernel_fp8(
   block_store<uint8_t, HD>(key_output_head, key_result);
 
   simd<fp16, HD> value_row = block_load<scalar_t, HD>(value_head);
-  simd<uint8_t, HD> value_result = quantize_key_row<HD>(value_row);
+  simd<uint8_t, HD> value_result = quantize_value_row<HD>(value_row);
   block_store<uint8_t, HD>(value_output_head, value_result);
 
   //                      New Implementation ends...              //
