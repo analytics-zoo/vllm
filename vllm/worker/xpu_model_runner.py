@@ -156,6 +156,7 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
     def build(self) -> ModelInputForXPU:
         input_tokens: List[int] = []
         input_positions: List[int] = []
+        input_mrope_positions: List[List[int]] = [[] for _ in range(3)]
         slot_mapping: List[int] = []
 
         seq_lens: List[int] = []
@@ -249,7 +250,7 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
                     input_positions.append(position)
                 if is_prompt:
                     mm_data = seq_group_metadata.multi_modal_data
-                    if mm_data and not self.runner.model_is_mrope:
+                    if mm_data and not self.runner.model_is_mrope and not self.runner.mm_registry.has_processor(self.runner.model_config):
                         mm_kwargs = self.multi_modal_input_mapper(mm_data)
                     else:
                         mm_kwargs = mm_data
@@ -262,19 +263,18 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
                             "mrope embedding type requires multi-modal input mapper "
                             "returns 'image_grid_thw' or 'video_grid_thw'.")
 
+                        second_per_grid_ts = mm_kwargs.get("second_per_grid_ts", None)
                         hf_config = self.runner.model_config.hf_config
                         token_ids = seq_data.get_token_ids()
                         temp_mrope_input_positions, mrope_position_delta = \
                             MRotaryEmbedding.get_input_positions(
                                 token_ids,
+                                hf_config=hf_config,
                                 image_grid_thw=image_grid_thw,
                                 video_grid_thw=video_grid_thw,
-                                image_token_id=hf_config.image_token_id,
-                                video_token_id=hf_config.video_token_id,
-                                vision_start_token_id=hf_config.vision_start_token_id,
-                                vision_end_token_id=hf_config.vision_end_token_id,
-                                spatial_merge_size=hf_config.vision_config.spatial_merge_size,
-                                context_len=0,
+                                second_per_grid_ts=second_per_grid_ts,
+                                seq_len=seq_len,
+                                context_len=context_len,
                             )
                         seq_data.mrope_position_delta = mrope_position_delta
                         if mrope_input_positions is None:
@@ -284,6 +284,16 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
                             # for _seq_mrope_input_positions in msections:
                             mrope_input_positions[idx].extend(
                                 temp_mrope_input_positions[idx])
+                else:
+                    if seq_data.mrope_position_delta is not None:
+                        context_len = seq_data.get_num_computed_tokens()
+                        next_pos = MRotaryEmbedding.get_next_input_positions(
+                            seq_data.mrope_position_delta,
+                            context_len,
+                            seq_len,
+                        )
+                        for idx in range(3):
+                            input_mrope_positions[idx].extend(next_pos[idx])
                 if is_prompt:
                     assert len(seq_ids) == 1
                     num_prefills += 1
@@ -334,7 +344,9 @@ class ModelInputForXPUBuilder(ModelRunnerInputBuilderBase[ModelInputForXPU]):
                                            dtype=torch.long,
                                            device=self.device)
 
-        if self.runner.model_is_mrope and mrope_input_positions is not None:
+        if self.runner.model_is_mrope and (mrope_input_positions is not None or any(input_mrope_positions)):
+            if any(input_mrope_positions):
+                mrope_input_positions = input_mrope_positions
             input_positions_tensor = torch.tensor(mrope_input_positions,
                                                   dtype=torch.long,
                                                   device=self.device)

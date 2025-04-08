@@ -212,7 +212,9 @@ class GLMBlock(nn.Module):
             config.hidden_size, eps=config.layernorm_epsilon)
 
         # MLP
-        self.mlp = GLMMLP(config, quant_config, prefix=f"{prefix}.mlp")
+        self.mlp = GLMMLP(config, layer, quant_config, prefix=f"{prefix}.mlp")
+
+        self.layer = layer
 
     def forward(
         self,

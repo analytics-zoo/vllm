@@ -1483,7 +1483,7 @@ class MiniCPMV(MiniCPMVBaseModel, SupportsMultiModal, SupportsLoRA):
 
         # quant_config references base class members,
         # so update values before init is called
-        cls.packed_modules_mapping.update(instance_cls.packed_modules_mapping)
-        cls.embedding_modules.update(instance_cls.embedding_modules)
-        cls.embedding_padding_modules += instance_cls.embedding_padding_modules
+        # cls.packed_modules_mapping.update(instance_cls.packed_modules_mapping)
+        # cls.embedding_modules.update(instance_cls.embedding_modules)
+        # cls.embedding_padding_modules += instance_cls.embedding_padding_modules
         return instance_cls(vllm_config=vllm_config, prefix=prefix)

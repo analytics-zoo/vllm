@@ -330,7 +330,7 @@ class InputRegistry:
         from vllm.multimodal import MultiModalKwargs
         from vllm.multimodal.profiling import MultiModalProfiler
 
-        if mm_registry.has_processor(model_config):
+        if False and mm_registry.has_processor(model_config):
             tokenizer = cached_tokenizer_from_config(model_config)
             processor = mm_registry.create_processor(model_config,
                                                      tokenizer,
