@@ -270,6 +270,56 @@ class ipex_ops:
             vllm._C.cache_ops.reshape_and_cache_ipexllm(key, value, key_cache, value_cache, slot_mapping, kv_cache_dtype, k_scale)
 
     @staticmethod
+    def paged_attention_gqa(
+        out: torch.Tensor,
+        query: torch.Tensor,
+        key_cache: torch.Tensor,
+        value_cache: torch.Tensor,
+        batch_size: int,
+        num_heads: int,
+        num_kv_heads: int,
+        scale: float,
+        block_tables: torch.Tensor,
+        seq_lens_tensor: torch.Tensor,
+        block_size: int,
+        head_size: int,
+        max_seq_len: int,
+        kv_cache_format: str
+    ):
+        if kv_cache_format == "fp8":
+            vllm._C.ops.paged_attention_gqa_fp8(
+                out,
+                query,
+                key_cache,
+                value_cache,
+                batch_size,
+                num_heads,
+                num_kv_heads,
+                scale,
+                block_tables,
+                seq_lens_tensor,
+                block_size,
+                head_size,
+                max_seq_len
+            )
+        else:
+            vllm._C.ops.paged_attention_gqa(
+                out,
+                query,
+                key_cache,
+                value_cache,
+                batch_size,
+                num_heads,
+                num_kv_heads,
+                scale,
+                block_tables,
+                seq_lens_tensor,
+                block_size,
+                head_size,
+                max_seq_len
+            )
+
+    @staticmethod
     def reshape_and_cache_flash(
         key: torch.Tensor,
         value: torch.Tensor,
