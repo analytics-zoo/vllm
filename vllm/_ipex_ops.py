@@ -264,7 +264,10 @@ class ipex_ops:
         k_scale: float,
         v_scale: float,
     ) -> None:
-        vllm._C.cache_ops.reshape_and_cache_ipexllm(key, value, key_cache, value_cache, slot_mapping, kv_cache_dtype, k_scale)
+        if kv_cache_dtype == "fp8":
+            vllm._C.cache_ops.reshape_and_cache_ipexllm_fp8(key, value, key_cache, value_cache, slot_mapping, kv_cache_dtype, k_scale)
+        else:
+            vllm._C.cache_ops.reshape_and_cache_ipexllm(key, value, key_cache, value_cache, slot_mapping, kv_cache_dtype, k_scale)
 
     @staticmethod
     def reshape_and_cache_flash(
