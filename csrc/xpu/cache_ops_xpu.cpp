@@ -10,7 +10,6 @@
 
 #include <torch/extension.h>
 #include "utils.h"
-#include "kv.h"
 
 using fp16 = sycl::half;
 using namespace sycl::ext::intel::esimd;

@@ -5,7 +5,6 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include <ext/intel/esimd.hpp>
-#include "kv.h"
 
 // clang-format on
 #include <float.h>
