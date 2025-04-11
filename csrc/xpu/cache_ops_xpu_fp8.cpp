@@ -106,15 +106,64 @@ void reshape_and_cache_ipexllm_fp8(torch::Tensor& key, torch::Tensor& value,
   int key_head_stride = key.stride(1);
   int value_head_stride = value.stride(1);
 
-  VLLM_XPU_DISPATCH_FLOATING_TYPES(
-      key.scalar_type(), "call_reshape_and_cache_ipexllm_kernel_fp8", [&] {
-        call_reshape_and_cache_ipexllm_kernel_fp8<scalar_t, 128>(
-            key.data_ptr<scalar_t>(), value.data_ptr<scalar_t>(),
-            key_cache.data_ptr<uint8_t>(), value_cache.data_ptr<uint8_t>(),
-            slot_mapping.data_ptr<int64_t>(), num_tokens, key_stride,
-            value_stride, key_head_stride, value_head_stride,
-            num_heads, head_size, block_size, x);
-      });
+  // This actually dispatches on scalar_type, we will then need to dispatch on Head Dim...
+switch (head_size) {
+  case 64:
+    VLLM_XPU_DISPATCH_FLOATING_TYPES(
+        key.scalar_type(), "call_reshape_and_cache_ipexllm_kernel_fp8", [&] {
+          call_reshape_and_cache_ipexllm_kernel_fp8<scalar_t, 64>(
+              key.data_ptr<scalar_t>(), value.data_ptr<scalar_t>(),
+              key_cache.data_ptr<uint8_t>(), value_cache.data_ptr<uint8_t>(),
+              slot_mapping.data_ptr<int64_t>(), num_tokens, key_stride,
+              value_stride, key_head_stride, value_head_stride, num_heads,
+              head_size, block_size, x);
+        });
+    break;
+  case 128:
+    VLLM_XPU_DISPATCH_FLOATING_TYPES(
+        key.scalar_type(), "call_reshape_and_cache_ipexllm_kernel_fp8", [&] {
+          call_reshape_and_cache_ipexllm_kernel_fp8<scalar_t, 128>(
+              key.data_ptr<scalar_t>(), value.data_ptr<scalar_t>(),
+              key_cache.data_ptr<uint8_t>(), value_cache.data_ptr<uint8_t>(),
+              slot_mapping.data_ptr<int64_t>(), num_tokens, key_stride,
+              value_stride, key_head_stride, value_head_stride, num_heads,
+              head_size, block_size, x);
+        });
+    break;
+  case 96:
+    VLLM_XPU_DISPATCH_FLOATING_TYPES(
+        key.scalar_type(), "call_reshape_and_cache_ipexllm_kernel_fp8", [&] {
+          call_reshape_and_cache_ipexllm_kernel_fp8<scalar_t, 96>(
+              key.data_ptr<scalar_t>(), value.data_ptr<scalar_t>(),
+              key_cache.data_ptr<uint8_t>(), value_cache.data_ptr<uint8_t>(),
+              slot_mapping.data_ptr<int64_t>(), num_tokens, key_stride,
+              value_stride, key_head_stride, value_head_stride, num_heads,
+              head_size, block_size, x);
+        });
+    break;
+  case 80:
+    VLLM_XPU_DISPATCH_FLOATING_TYPES(
+        key.scalar_type(), "call_reshape_and_cache_ipexllm_kernel_fp8", [&] {
+          call_reshape_and_cache_ipexllm_kernel_fp8<scalar_t, 80>(
+              key.data_ptr<scalar_t>(), value.data_ptr<scalar_t>(),
+              key_cache.data_ptr<uint8_t>(), value_cache.data_ptr<uint8_t>(),
+              slot_mapping.data_ptr<int64_t>(), num_tokens, key_stride,
+              value_stride, key_head_stride, value_head_stride, num_heads,
+              head_size, block_size, x);
+        });
+    break;
+  default:
+    TORCH_CHECK(false, "Unsupported head_dim: ", head_size);
+}
+  // VLLM_XPU_DISPATCH_FLOATING_TYPES(
+  //     key.scalar_type(), "call_reshape_and_cache_ipexllm_kernel_fp8", [&] {
+  //       call_reshape_and_cache_ipexllm_kernel_fp8<scalar_t, 128>(
+  //           key.data_ptr<scalar_t>(), value.data_ptr<scalar_t>(),
+  //           key_cache.data_ptr<uint8_t>(), value_cache.data_ptr<uint8_t>(),
+  //           slot_mapping.data_ptr<int64_t>(), num_tokens, key_stride,
+  //           value_stride, key_head_stride, value_head_stride,
+  //           num_heads, head_size, block_size, x);
+  //     });
 }
 
 
