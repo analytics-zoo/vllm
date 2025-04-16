@@ -17,6 +17,7 @@ logger = init_logger('vllm.attention.backends.ipex_attn')
 from vllm.utils import print_info_once, print_warning_once
 
 _PARTITION_SIZE = 512
+_IPEX_BACKEND_SUPPORTED_KV_CACHE_FORMAT=["fp8", "auto"]
 
 
 class IpexAttnBackend(AttentionBackend):
@@ -268,10 +269,14 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             raise ValueError(
                 f"Head size {head_size} is not supported by PagedAttention. "
                 f"Supported head sizes are: {supported_head_sizes}.")
-        if kv_cache_dtype != "auto":
-            raise NotImplementedError(
-                "IPEX backend does not support FP8 KV cache. "
-                "Please use xFormers backend instead.")
+        if kv_cache_dtype not in _IPEX_BACKEND_SUPPORTED_KV_CACHE_FORMAT:
+            raise NotImplementedError(f"IPEX backend does not support "
+                                      "KV cache format {kv_cache_dtype}")
+        # Also check for gqa models...
+        self.using_gqa_kernel = use_gqa_kernel(self.num_heads, self.num_kv_heads, self.head_size, self.logits_soft_cap)
+        if not self.using_gqa_kernel and kv_cache_dtype == "fp8":
+            raise NotImplementedError(f"IPEX backend currently only supports "
+                                      "fp8 kv cache in group-query attention")
         
         self.ipex_varlen_attn = False
         flag = os.getenv("IPEX_LLM_PREFILL_VARLEN_BACKEND", None)
@@ -350,9 +355,8 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
-        using_gqa_kernel = use_gqa_kernel(self.num_heads, self.num_kv_heads, self.head_size, self.logits_soft_cap)
         if kv_cache is not None:
-            if using_gqa_kernel:
+            if self.using_gqa_kernel:
                 key_cache, value_cache = self.split_kv_cache_ipexllm(
                     kv_cache, self.num_kv_heads, self.head_size)      
                 ipex_ops.reshape_and_cache_ipexllm(
@@ -419,7 +423,6 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     else:
                         att_masks = [None] * len(prefill_meta.seq_lens)
                     prefill_meta.attn_bias = att_masks
-
                 
                 if self.ipex_varlen_attn:
                     output = torch.empty(
@@ -501,7 +504,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                 import vllm._C.ops
                 assert self.head_size == 128 or self.head_size == 64
                 value = os.environ.get('USE_CONTEXT_V1')
-                if using_gqa_kernel:
+                if self.using_gqa_kernel:
                     # if using_gqa_kernel, then only the v1 kernel can be used
                     out = vllm._C.ops.context_attention_forward_v1(query, key_cache, value_cache, prefill_meta.block_tables, prefill_meta.query_start_loc, prefill_meta.seq_lens_tensor, prefill_meta.context_lens, prefill_meta.max_seqlen, torch.amax(prefill_meta.context_lens).item())
                 elif value is None:
@@ -532,9 +535,9 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             bsz = len(decode_meta.seq_lens)
             import vllm._C.ops
 
-            if using_gqa_kernel:
+            if self.using_gqa_kernel:
                 block_size = value_cache.shape[2]
-                vllm._C.ops.paged_attention_gqa(
+                ipex_ops.paged_attention_gqa(
                     out,
                     decode_query,
                     key_cache,
@@ -547,7 +550,8 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     decode_meta.seq_lens_tensor,
                     block_size,
                     head_size,
-                    max_seq_len
+                    max_seq_len,
+                    self.kv_cache_dtype
                 )
             else:
                 block_size = value_cache.shape[3]
