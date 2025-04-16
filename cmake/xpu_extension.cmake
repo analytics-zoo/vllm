@@ -33,7 +33,9 @@ list(APPEND VLLM_LINK_LIBRARIES "sycl" "OpenCL" "pthread" "m" "dl" "dnnl" )
 set(VLLM_EXT_SRC
     "csrc/xpu/activation_xpu.cpp"
     "csrc/xpu/attention_xpu.cpp"
+    "csrc/xpu/attention_xpu_fp8.cpp"
     "csrc/xpu/cache_ops_xpu.cpp"
+    "csrc/xpu/cache_ops_xpu_fp8.cpp"
     "csrc/xpu/gemm_kernels_xpu.cpp"
     "csrc/xpu/layernorm_xpu.cpp"
     "csrc/xpu/pos_encoding_xpu.cpp"

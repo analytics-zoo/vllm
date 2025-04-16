@@ -4,11 +4,15 @@
 #endif
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include <ext/intel/esimd.hpp>
 // clang-format on
 #include "xpu_types.h"
 
 #include <torch/extension.h>
 #include "utils.h"
+
+using fp16 = sycl::half;
+using namespace sycl::ext::intel::esimd;
 
 template <typename scalar_t>
 void reshape_and_cache_kernel(

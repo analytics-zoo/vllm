@@ -26,7 +26,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "paged_attention_gqa",
     &paged_attention_gqa,
     "PagedAttention GQA.");
-    
+
+  ops.def("paged_attention_gqa_fp8", &paged_attention_gqa_fp8, "PagedAttention GQA fp8.");
+
   // Activation ops
   ops.def(
     "silu_and_mul",
@@ -84,6 +86,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     "reshape_and_cache_ipexllm",
     &reshape_and_cache_ipexllm,
     "Reshape the key and value tensors and cache them for ipex_llm");
+
+  cache_ops.def(
+    "reshape_and_cache_ipexllm_fp8",
+    &reshape_and_cache_ipexllm_fp8,
+    "Reshape the key and value tensors and cache them for ipex_llm with fp8");
 
   // Quant
   ops.def(
