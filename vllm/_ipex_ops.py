@@ -28,9 +28,9 @@ class ipex_ops:
 
     @staticmethod
     def silu_and_mul(out: torch.Tensor, x: torch.Tensor) -> None:
-        # x1, x2 = ipex_ops._reshape_activation_tensor(x)
-        # ipex.llm.functional.silu_mul(x1, x2, out)
-        vllm._C.ops.silu_and_mul(out, x)
+        x1, x2 = ipex_ops._reshape_activation_tensor(x)
+        ipex.llm.functional.silu_mul(x1, x2, out)
+        # vllm._C.ops.silu_and_mul(out, x)
 
     @staticmethod
     def gelu_and_mul(out: torch.Tensor, x: torch.Tensor) -> None:

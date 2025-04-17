@@ -38,6 +38,7 @@ set(VLLM_EXT_SRC
     "csrc/xpu/layernorm_xpu.cpp"
     "csrc/xpu/pos_encoding_xpu.cpp"
     "csrc/xpu/utils.cpp"
+    "csrc/xpu/fused_moe.cpp"
     "csrc/xpu/pybind.cpp")
 
 define_gpu_extension_target(
