@@ -92,9 +92,6 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         self.intermediate_size = layer.w2_weight.data.shape[2]
         self.hidden_size = layer.w13_weight.data.shape[2]
 
-        # import pdb
-        # pdb.set_trace()
-
         local_rank = os.environ["LOCAL_RANK"]
         self.device = torch.device(f"xpu:{local_rank}")
         lowbit = os.getenv("IPEX_LLM_LOWBIT", "sym_int4")
@@ -113,7 +110,6 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         layer._parameters['w13_weight'] = None
         self.qw1_weight = w13_params
         
-
         w2_params = []
         for i in range(self.num_experts):
             cur_params = FP4Params(data=layer.w2_weight.data[i,:,:],
@@ -132,6 +128,7 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         w2 = self.qw2_weight
         self.w2_addrs = [expert.data_ptr() for expert in w2]
         self.w2_addrs = torch.tensor(self.w2_addrs, device=self.device, dtype=torch.uint64)
+
         logger.warning_once("model processed.")
 
 
@@ -190,21 +187,31 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         apply_router_weight_on_input: bool = False,
         **kwargs,
     ):
-        return self.fused_moe_xpu(hidden_states=x,
-                                w1=layer.w13_weight,
-                                w2=layer.w2_weight,
-                                topk=top_k,
-                                gating_output=router_logits,
-                                global_num_experts=global_num_experts,
-                                expert_map=expert_map,
-                                renormalize=renormalize)
+        num_tokens = x.shape[:-1].numel()
+        if num_tokens > 256:
+            return self.fused_moe_xpu(hidden_states=x,
+                                    w1=self.qw1_weight,
+                                    w2=self.qw2_weight,
+                                    topk=top_k,
+                                    gating_output=router_logits,
+                                    global_num_experts=global_num_experts,
+                                    expert_map=expert_map,
+                                    renormalize=renormalize)
+        else:
+            return self.fused_moe_xpu_decode(hidden_states=x,
+                                    w1=self.qw1_weight,
+                                    w2=self.qw2_weight,
+                                    topk=top_k,
+                                    gating_output=router_logits,
+                                    global_num_experts=global_num_experts,
+                                    expert_map=expert_map,
+                                    renormalize=renormalize)
 
-
-    def fused_moe_xpu(
+    def fused_moe_xpu_decode(
         self,
         hidden_states: torch.Tensor,
-        w1: torch.Tensor,
-        w2: torch.Tensor,
+        w1,
+        w2,
         gating_output: torch.Tensor,
         topk: int,
         global_num_experts,
@@ -237,18 +244,77 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
             expert_map = expert_map.to(device=device)
             topk_indices = expert_map[topk_indices]
 
-        # w1: [num_experts, intermediate_size * 2, hidden_size]
-        # [num_tokens, hidden_size] -> [num_experts, intermediate_size * 2] 
-
-        # topk_indices: [bsz * seq_len, num_selected_experts]
-        # hidden_states: [bsz * seq_len, hidden_size]
-        # tmp: [bsz * seq_len, intermediate_size * 2]
-
-        w1 = self.qw1_weight
-        w2 = self.qw2_weight
+        cur_topk_indices = topk_indices.T.flatten()
+        cur_topk_indices, _ = torch.sort(cur_topk_indices)
+        cur_topk_indices = cur_topk_indices.long()
+        topk_indices = topk_indices.flatten()
+        topk_argsort_indices = topk_indices.argsort()
+        topk_argsort_revert_indices = topk_argsort_indices.argsort()
+        token_indices = torch.arange(num_tokens, device=device).repeat_interleave(topk)
+        token_indices = token_indices[topk_argsort_indices]
+        group_sizes = custom_histogram(topk_indices.to(torch.int32), 0, num_experts - 1)
         
-        # tmp = vllm._C.ops.moe_forward(hidden_states, topk_indices, self.w1_addrs, hidden_size, intermediate_size, expert_size, intermediate_size * 2, qtype)
+        x = hidden_states[token_indices]
 
+        # x = custom_gmm(x, w1, group_sizes, intermediate_size * 2)
+
+        # x: [bsz * seq_len * num_selected_experts, hidden_size]
+        # w1_out: [bsz * seq_len * num_selected_experts, intermediate_size * 2]
+        # topk_indices: [bsz * seq_len * num_selected_experts]
+
+        x = vllm._C.ops.moe_forward(x, cur_topk_indices, self.w1_addrs, hidden_size, intermediate_size * 2, qtype)
+
+        # x = F.silu(x[..., :intermediate_size]) * x[..., intermediate_size:]
+        output = torch.zeros((x.shape[0], intermediate_size), device=x.device, dtype=x.dtype)
+        ipex_ops.silu_and_mul(output, x)
+        x = output
+
+        # x = custom_gmm(x, w2, group_sizes, hidden_size)
+        x = vllm._C.ops.moe_forward(x, cur_topk_indices, self.w2_addrs, intermediate_size, hidden_size, qtype)
+
+        x = x[topk_argsort_revert_indices].reshape(-1, topk, hidden_size)
+
+        x = x * topk_weights.unsqueeze_(dim=-1)
+        x = x.sum(dim=-2)
+        x = x.reshape(orig_shape)
+        return x
+
+    def fused_moe_xpu(
+        self,
+        hidden_states: torch.Tensor,
+        w1,
+        w2,
+        gating_output: torch.Tensor,
+        topk: int,
+        global_num_experts,
+        expert_map,
+        renormalize: bool,
+    ) -> torch.Tensor:
+        """
+        Args:
+            hidden_states: [*, hidden_size]
+            w1: [num_experts, intermediate_size * 2, hidden_size]
+            w2: [num_experts, hidden_size, intermediate_size]
+            gating_output: [*, num_experts]
+        """
+        orig_shape = hidden_states.shape
+        hidden_size = hidden_states.shape[-1]
+        num_tokens = hidden_states.shape[:-1].numel()
+        num_experts = self.num_experts
+        intermediate_size = self.intermediate_size
+        qtype = self.qtype
+
+        device = hidden_states.device
+        dtype = hidden_states.dtype
+        hidden_states = hidden_states.view(num_tokens, hidden_size)
+        gating_output = gating_output.view(num_tokens, global_num_experts)
+        topk_weights, topk_indices = F.softmax(gating_output, dim=-1, dtype=torch.float).topk(topk, dim=-1)
+        if renormalize:
+            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        topk_weights = topk_weights.to(dtype)
+        if expert_map is not None:
+            expert_map = expert_map.to(device=device)
+            topk_indices = expert_map[topk_indices]
 
         topk_indices = topk_indices.flatten()
         topk_argsort_indices = topk_indices.argsort()
@@ -258,14 +324,12 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         group_sizes = custom_histogram(topk_indices.to(torch.int32), 0, num_experts - 1)
         
         x = hidden_states[token_indices]
-        
+
         x = custom_gmm(x, w1, group_sizes, intermediate_size * 2)
         # x = F.silu(x[..., :intermediate_size]) * x[..., intermediate_size:]
-
         output = torch.zeros((x.shape[0], intermediate_size), device=x.device, dtype=x.dtype)
         ipex_ops.silu_and_mul(output, x)
         x = output
-
         x = custom_gmm(x, w2, group_sizes, hidden_size)
         x = x[topk_argsort_revert_indices].reshape(-1, topk, hidden_size)
 
@@ -273,7 +337,6 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         x = x.sum(dim=-2)
         x = x.reshape(orig_shape)
         return x
-
 
 def custom_histogram(indices, min, max):
     bin_counts = torch.histc(indices, bins=max - min + 1, min=min, max=max).to(torch.int32)

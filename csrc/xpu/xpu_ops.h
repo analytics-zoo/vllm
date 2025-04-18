@@ -164,8 +164,7 @@ torch::Tensor moe_forward(
     torch::Tensor input,
     torch::Tensor indexs,
     torch::Tensor qweights_attr,
-    int64_t hidden_size,
-    int64_t intermediate_size,
+    int64_t state_size,
     int64_t output_size,
     int64_t qtype
 ) ;
