@@ -252,25 +252,23 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         topk_argsort_revert_indices = topk_argsort_indices.argsort()
         token_indices = torch.arange(num_tokens, device=device).repeat_interleave(topk)
         token_indices = token_indices[topk_argsort_indices]
-        group_sizes = custom_histogram(topk_indices.to(torch.int32), 0, num_experts - 1)
         
         x = hidden_states[token_indices]
-
-        # x = custom_gmm(x, w1, group_sizes, intermediate_size * 2)
 
         # x: [bsz * seq_len * num_selected_experts, hidden_size]
         # w1_out: [bsz * seq_len * num_selected_experts, intermediate_size * 2]
         # topk_indices: [bsz * seq_len * num_selected_experts]
 
-        x = vllm._C.ops.moe_forward(x, cur_topk_indices, self.w1_addrs, hidden_size, intermediate_size * 2, qtype)
+        x = vllm._C.ops.fused_moe_forward(x, cur_topk_indices, self.w1_addrs, self.w2_addrs, hidden_size, intermediate_size, qtype)
 
-        # x = F.silu(x[..., :intermediate_size]) * x[..., intermediate_size:]
-        output = torch.zeros((x.shape[0], intermediate_size), device=x.device, dtype=x.dtype)
-        ipex_ops.silu_and_mul(output, x)
-        x = output
+        
+        # x = vllm._C.ops.moe_forward(x, cur_topk_indices, self.w1_addrs, hidden_size, intermediate_size * 2, qtype)
 
-        # x = custom_gmm(x, w2, group_sizes, hidden_size)
-        x = vllm._C.ops.moe_forward(x, cur_topk_indices, self.w2_addrs, intermediate_size, hidden_size, qtype)
+        # output = torch.zeros((x.shape[0], intermediate_size), device=x.device, dtype=x.dtype)
+        # ipex_ops.silu_and_mul(output, x)
+        # x = output
+
+        # x = vllm._C.ops.moe_forward(x, cur_topk_indices, self.w2_addrs, intermediate_size, hidden_size, qtype)
 
         x = x[topk_argsort_revert_indices].reshape(-1, topk, hidden_size)
 

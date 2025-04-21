@@ -3,6 +3,63 @@
 
 using ST = at::ScalarType;
 
+#include <sycl/sycl.hpp>
+#include "xpu_types.h"
+#include <torch/extension.h>
+
+template <typename T>
+__inline__ T silu_xpu(const T& x) {
+  // x * sigmoid(x)
+  return (T)(((float)x) / (1.0f + sycl::exp((float)-x)));
+}
+
+template <typename scalar_t>
+void silu_and_mul_kernel(
+    scalar_t* __restrict__ out, // [..., d]
+    const scalar_t* __restrict__ input, // [..., 2, d]
+    const int d,
+    const sycl::nd_item<3>& item_ct1) {
+  const int64_t token_idx = item_ct1.get_group(2);
+  for (int64_t idx = item_ct1.get_local_id(2); idx < d;
+       idx += item_ct1.get_local_range(2)) {
+    const scalar_t x = input[token_idx * 2 * d + idx];
+    const scalar_t y = input[token_idx * 2 * d + d + idx];
+    out[token_idx * d + idx] = silu_xpu(x) * y;
+  }
+}
+
+template <typename scalar_t>
+void call_silu_and_mul_kernel(
+    int num_tokens,
+    int d,
+    const scalar_t* __restrict__ input,
+    scalar_t* __restrict__ output) {
+  using sycl_t = vllm::xpu::SyclTypeTrait<scalar_t>::Type;
+  sycl::range<3> grid(1, 1, num_tokens);
+  sycl::range<3> block(1, 1, std::min(d, 1024));
+  auto& queue = vllm::xpu::vllmGetQueue();
+  queue.submit([&](sycl::handler& cgh) {
+    cgh.parallel_for(
+        sycl::nd_range<3>(grid * block, block), [=](sycl::nd_item<3> item_ct1) {
+          silu_and_mul_kernel<sycl_t>(
+              (sycl_t*)output, (const sycl_t*)input, d, item_ct1);
+        });
+  });
+}
+
+void _silu_and_mul(torch::Tensor& out, torch::Tensor& input) {
+  int num_tokens = input.numel() / input.size(-1);
+  int d = input.size(-1) / 2;
+
+  VLLM_XPU_DISPATCH_FLOATING_TYPES(
+      input.scalar_type(), "call_silu_and_mul_kernel", [&] {
+        call_silu_and_mul_kernel(
+            num_tokens,
+            d,
+            input.data_ptr<scalar_t>(),
+            out.data_ptr<scalar_t>());
+      });
+}
 
 template <typename IT, const int VS, const int GS, const int ES, const int QTYPE>
 static void moe_forward_kernel(
@@ -159,4 +216,54 @@ torch::Tensor moe_forward(
     );
 
     return output;
+}
+
+
+torch::Tensor fused_moe_forward(
+    torch::Tensor input,
+    torch::Tensor indexs,
+    torch::Tensor qweights1_attr,
+    torch::Tensor qweights2_attr,
+    int64_t hidden_size,
+    int64_t intermediate_size,
+    int64_t qtype
+) {
+    auto [gmm_func] = [&] () {
+        switch (qtype) {
+            case GGML_TYPE_Q4_0:
+                return dispatch_moe_forward<GGML_TYPE_Q4_0>(input.scalar_type());
+            case GGML_TYPE_Q4_0_WOQ:
+                return dispatch_moe_forward<GGML_TYPE_Q4_0_WOQ>(input.scalar_type());
+            case GGML_TYPE_FP8E5:
+                return dispatch_moe_forward<GGML_TYPE_FP8E5>(input.scalar_type());
+            default: throw std::runtime_error("unsupported qtype: " + std::to_string(qtype));
+        }
+    } ();
+
+    int64_t num_tokens = indexs.numel();
+
+    torch::Tensor w1_output = torch::zeros({num_tokens, intermediate_size * 2},
+                                    torch::device(input.device()).dtype(input.dtype()));
+    
+    torch::Tensor tmp = torch::zeros({num_tokens, intermediate_size},
+                                    torch::device(input.device()).dtype(input.dtype()));
+    
+    torch::Tensor w2_output = torch::zeros({num_tokens, hidden_size},
+                                    torch::device(input.device()).dtype(input.dtype()));
+
+    gmm_func(
+        input.data_ptr(), indexs.data_ptr<int64_t>(),
+        qweights1_attr.data_ptr<uint64_t>(), w1_output.data_ptr(),
+        num_tokens, hidden_size, intermediate_size * 2, input.device()
+    );
+
+    _silu_and_mul(tmp, w1_output);
+
+    gmm_func(
+        tmp.data_ptr(), indexs.data_ptr<int64_t>(),
+        qweights2_attr.data_ptr<uint64_t>(), w2_output.data_ptr(),
+        num_tokens, intermediate_size, hidden_size, input.device()
+    );
+
+    return w2_output;
 }
