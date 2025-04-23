@@ -245,16 +245,10 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
             topk_indices = expert_map[topk_indices]
 
         topk_indices = topk_indices.flatten()
-        # cur_topk_indices, _ = torch.sort(topk_indices)
-        # cur_topk_indices = cur_topk_indices.long()
-        
-        # topk_argsort_indices = topk_indices.argsort()
-        # topk_argsort_revert_indices = topk_argsort_indices.argsort()
         token_indices = torch.arange(num_tokens, device=device).repeat_interleave(topk)
-        # token_indices = token_indices[topk_argsort_indices]
         
         # padding_len = cur_topk_indices[cur_topk_indices == -1].shape[0]
-        # padding_len = 0
+
         x = hidden_states[token_indices]
 
         # x: [bsz * seq_len * num_selected_experts, hidden_size]
@@ -273,7 +267,6 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         #     padding_x = torch.zeros(padding_shape, dtype=x.dtype, device=x.device)
         #     x = torch.cat((padding_x, x), dim=0)
 
-        # x = x[topk_argsort_revert_indices].reshape(-1, topk, hidden_size)
         x = x.reshape(-1, topk, hidden_size)
         x = x * topk_weights.unsqueeze_(dim=-1)
         x = x.sum(dim=-2)

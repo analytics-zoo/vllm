@@ -345,6 +345,9 @@ class EngineCoreProc(EngineCore):
                         ready_pipe,
                         **kwargs):
         """Launch EngineCore busy loop in background process."""
+        from ipex_llm.vllm.xpu.model_convert import _ipex_llm_convert
+        lowbit = os.getenv("IPEX_LLM_LOWBIT", "sym_int4")
+        _ipex_llm_convert(lowbit)
 
         # Signal handler used for graceful termination.
         # SystemExit exception is only raised once to allow this and worker
