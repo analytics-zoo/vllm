@@ -188,7 +188,7 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         **kwargs,
     ):
         num_tokens = x.shape[:-1].numel()
-        if num_tokens > 256:
+        if not envs.VLLM_USE_V1 and num_tokens > 256:
             return self.fused_moe_xpu(hidden_states=x,
                                     w1=self.qw1_weight,
                                     w2=self.qw2_weight,
@@ -244,34 +244,37 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
             expert_map = expert_map.to(device=device)
             topk_indices = expert_map[topk_indices]
 
-        cur_topk_indices = topk_indices.T.flatten()
-        cur_topk_indices, _ = torch.sort(cur_topk_indices)
-        cur_topk_indices = cur_topk_indices.long()
         topk_indices = topk_indices.flatten()
-        topk_argsort_indices = topk_indices.argsort()
-        topk_argsort_revert_indices = topk_argsort_indices.argsort()
-        token_indices = torch.arange(num_tokens, device=device).repeat_interleave(topk)
-        token_indices = token_indices[topk_argsort_indices]
+        # cur_topk_indices, _ = torch.sort(topk_indices)
+        # cur_topk_indices = cur_topk_indices.long()
         
+        # topk_argsort_indices = topk_indices.argsort()
+        # topk_argsort_revert_indices = topk_argsort_indices.argsort()
+        token_indices = torch.arange(num_tokens, device=device).repeat_interleave(topk)
+        # token_indices = token_indices[topk_argsort_indices]
+        
+        # padding_len = cur_topk_indices[cur_topk_indices == -1].shape[0]
+        # padding_len = 0
         x = hidden_states[token_indices]
 
         # x: [bsz * seq_len * num_selected_experts, hidden_size]
         # w1_out: [bsz * seq_len * num_selected_experts, intermediate_size * 2]
         # topk_indices: [bsz * seq_len * num_selected_experts]
+        # res: [bsz * seq_len * num_selected_experts, hidden_size]
+        x = vllm._C.ops.fused_moe_forward(x, topk_indices, self.w1_addrs, self.w2_addrs, hidden_size, intermediate_size, qtype)
 
-        x = vllm._C.ops.fused_moe_forward(x, cur_topk_indices, self.w1_addrs, self.w2_addrs, hidden_size, intermediate_size, qtype)
+        # if padding_len > 0:
+        #     x = vllm._C.ops.fused_moe_forward(x[padding_len:], cur_topk_indices[padding_len:], self.w1_addrs, self.w2_addrs, hidden_size, intermediate_size, qtype)
+        # else:
+        #     x = vllm._C.ops.fused_moe_forward(x, cur_topk_indices, self.w1_addrs, self.w2_addrs, hidden_size, intermediate_size, qtype)
 
-        
-        # x = vllm._C.ops.moe_forward(x, cur_topk_indices, self.w1_addrs, hidden_size, intermediate_size * 2, qtype)
+        # if padding_len > 0:
+        #     padding_shape = (padding_len, hidden_size)
+        #     padding_x = torch.zeros(padding_shape, dtype=x.dtype, device=x.device)
+        #     x = torch.cat((padding_x, x), dim=0)
 
-        # output = torch.zeros((x.shape[0], intermediate_size), device=x.device, dtype=x.dtype)
-        # ipex_ops.silu_and_mul(output, x)
-        # x = output
-
-        # x = vllm._C.ops.moe_forward(x, cur_topk_indices, self.w2_addrs, intermediate_size, hidden_size, qtype)
-
-        x = x[topk_argsort_revert_indices].reshape(-1, topk, hidden_size)
-
+        # x = x[topk_argsort_revert_indices].reshape(-1, topk, hidden_size)
+        x = x.reshape(-1, topk, hidden_size)
         x = x * topk_weights.unsqueeze_(dim=-1)
         x = x.sum(dim=-2)
         x = x.reshape(orig_shape)
