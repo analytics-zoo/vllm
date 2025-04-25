@@ -214,12 +214,13 @@ def _make_attention_mask(
     return mask
 
 
-def use_sdp_causal(head_dim, query_states, logits_soft_cap):
+def use_sdp_causal(head_dim, query_states, logits_soft_cap, attn_type):
     return (
         (logits_soft_cap != 0                        # for gemma model 
         or head_dim in [-1, 64, 80, 96, 128])        # for now
         and query_states.device.type == "xpu"        # GPU
         and query_states.dtype in [torch.float, torch.half]     # fp32/fp16
+        and attn_type is AttentionType.DECODER
     )
 
 def use_gqa_kernel(num_heads, num_kv_heads, head_size, logits_soft_cap):
@@ -344,10 +345,9 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             shape = [num_tokens, num_heads * head_size]
         """
         assert k_scale == 1.0 and v_scale == 1.0
-        if attn_type != AttentionType.DECODER:
-            raise NotImplementedError("Encoder self-attention and "
-                                      "encoder/decoder cross-attention "
-                                      "are not implemented for "
+        if attn_type != AttentionType.DECODER and attn_type != AttentionType.ENCODER_ONLY:
+            raise NotImplementedError("Encoder/decoder cross-attention "
+                                      "is not implemented for "
                                       "IpexAttnBackendImpl")
         num_tokens, hidden_size = query.shape
         # Reshape the query, key, and value tensors.
@@ -355,7 +355,8 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
         key = key.view(-1, self.num_kv_heads, self.head_size)
         value = value.view(-1, self.num_kv_heads, self.head_size)
 
-        if kv_cache is not None:
+        if kv_cache is not None and attn_type == AttentionType.DECODER:
+            # Only update the kv_cache with decoder architecture...
             if self.using_gqa_kernel:
                 key_cache, value_cache = self.split_kv_cache_ipexllm(
                     kv_cache, self.num_kv_heads, self.head_size)      
@@ -401,6 +402,11 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
 
         assert query.shape[0] == num_prefill_tokens
         assert decode_query.shape[0] == num_decode_tokens
+        # If mask is not set, then is_causal=True
+        # If mask is set, then is_causal=False
+        is_causal = not self.need_mask
+        if attn_type == AttentionType.ENCODER_ONLY:
+            is_causal = False
 
         if prefill_meta := attn_metadata.prefill_metadata:
             assert prefill_meta.seq_lens is not None
@@ -445,7 +451,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                                               pdropout=0.0,
                                               softmax_scale=self.scale,
                                               zero_tensors=False,
-                                              is_causal=True,
+                                              is_causal=is_causal,
                                               return_softmax=False,
                                               gen_=None,
                                               logits_soft_cap=self.logits_soft_cap)
@@ -462,7 +468,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     for seq_len, mask in zip(prefill_meta.seq_lens,
                                             prefill_meta.attn_bias):
                         end = start + seq_len
-                        if self.alibi_slopes is None and use_sdp_causal(self.head_size, query, self.logits_soft_cap):
+                        if self.alibi_slopes is None and use_sdp_causal(self.head_size, query, self.logits_soft_cap, attn_type):
                             import xe_addons
                             if mask is not None:
                                 mask = mask.unsqueeze(0)
@@ -490,7 +496,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                                 value[None, :, start:end, :],
                                 attn_mask=mask,
                                 dropout_p=0.0,
-                                is_causal=not self.need_mask,
+                                is_causal=is_causal,
                                 scale=self.scale).squeeze(0).movedim(
                                     query.dim() - 2, 0)
                         output[start:end, :, :] = sub_out
