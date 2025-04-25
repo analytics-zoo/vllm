@@ -52,6 +52,7 @@ from ipex_llm.ggml.quantize import ggml_tensor_qtype
 from ipex_llm.transformers.low_bit_linear import MatMulLowBit
 import xe_linear
 import xe_batch
+import xe_addons
 
 from vllm._ipex_ops import ipex_ops
 import vllm._C.ops
@@ -236,9 +237,10 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         dtype = hidden_states.dtype
         hidden_states = hidden_states.view(num_tokens, hidden_size)
         gating_output = gating_output.view(num_tokens, global_num_experts)
-        topk_weights, topk_indices = F.softmax(gating_output, dim=-1, dtype=torch.float).topk(topk, dim=-1)
-        if renormalize:
-            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        # topk_weights, topk_indices = F.softmax(gating_output, dim=-1, dtype=torch.float).topk(topk, dim=-1)
+        # if renormalize:
+        #     topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        topk_indices, topk_weights = xe_addons.moe_softmax_topk(gating_output, topk, renormalize)
         topk_weights = topk_weights.to(dtype)
         if expert_map is not None:
             expert_map = expert_map.to(device=device)
@@ -302,9 +304,10 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         dtype = hidden_states.dtype
         hidden_states = hidden_states.view(num_tokens, hidden_size)
         gating_output = gating_output.view(num_tokens, global_num_experts)
-        topk_weights, topk_indices = F.softmax(gating_output, dim=-1, dtype=torch.float).topk(topk, dim=-1)
-        if renormalize:
-            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        # topk_weights, topk_indices = F.softmax(gating_output, dim=-1, dtype=torch.float).topk(topk, dim=-1)
+        # if renormalize:
+        #     topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        topk_indices, topk_weights = xe_addons.moe_softmax_topk(gating_output, topk, renormalize)
         topk_weights = topk_weights.to(dtype)
         if expert_map is not None:
             expert_map = expert_map.to(device=device)
