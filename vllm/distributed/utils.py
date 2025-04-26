@@ -322,11 +322,25 @@ def stateless_init_torch_distributed_process_group(
                                          backend_options)
         backend_type = ProcessGroup.BackendType.NCCL
         device = torch.device("cuda")
+    elif backend == "ccl":
+        import oneccl_bindings_for_pytorch
+        from torch.distributed import ProcessGroupCCL
+
+        # Return the ProcessGroup directly...
+        # Let's see if this works or not...
+        # The source code for ProcessGroupCCL: 
+        # https://github.com/intel/torch-ccl/blob/6acc2008785b7e0a859dfcd22377d6b891212351/oneccl_bindings_for_pytorch/csrc/init.cpp#L132
+        backend_type = Backend.backend_type_map[backend]
+        device = torch.device("xpu")
+        backend_class = ProcessGroupCCL(prefix_store, group_rank, group_size, timeout=timeout)
     else:
+        # TODO: add a new processgroup option for oneccl...
         raise RuntimeError(f"Unsupported torch distributed backend: {backend}")
 
     pg._set_default_backend(backend_type)
-    backend_class._set_sequence_number_for_group()
+    if backend != "ccl":
+        # OneCCL is a customized backend, that do not need this...
+        backend_class._set_sequence_number_for_group()
 
     pg._register_backend(device, backend_type, backend_class)
 

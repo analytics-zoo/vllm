@@ -19,6 +19,9 @@ class DeviceCommunicatorBase:
                  device: Optional[torch.device] = None,
                  device_group: Optional[ProcessGroup] = None,
                  unique_name: str = ""):
+        # The CPU group is simply for getting initial metadata.
+        # We uses the device_group for underlying data communication...
+        # Therefore the thing we needs to be done is to get-rid of this required cpu_group...
         self.device = device or torch.device("cpu")
         self.cpu_group = cpu_group
         self.device_group = device_group
