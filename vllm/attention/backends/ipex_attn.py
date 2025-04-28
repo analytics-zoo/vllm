@@ -286,7 +286,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             raise NotImplementedError(f"IPEX backend does not support "
                                        "KV cache format {kv_cache_dtype}")
         # Also check for gqa models...
-        self.using_gqa_kernel = use_gqa_kernel(self.num_heads, self.num_kv_heads, self.head_size, self.logits_soft_cap, attn_type)
+        self.using_gqa_kernel = use_gqa_kernel(self.num_heads, self.num_kv_heads, self.head_size, self.logits_soft_cap)
         if not self.using_gqa_kernel and kv_cache_dtype == "fp8":
             raise NotImplementedError(f"IPEX backend currently only supports "
                                       "fp8 kv cache in group-query attention")
