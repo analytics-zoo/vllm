@@ -2,11 +2,12 @@
 
 from typing import Dict, List, Optional, Tuple
 
-try:
-    import intel_extension_for_pytorch.llm.modules as ipex_modules
-    _use_ipex = True
-except ImportError:
-    _use_ipex = False
+# try:
+#     import intel_extension_for_pytorch.llm.modules as ipex_modules
+#     _use_ipex = True
+# except ImportError:
+#     _use_ipex = False
+_use_ipex = False
 
 import torch
 
