@@ -81,6 +81,12 @@ class RayDistributedExecutor(DistributedExecutorBase):
             if current_platform.is_tpu():
                 os.environ["VLLM_USE_RAY_COMPILED_DAG_CHANNEL_TYPE"] = "shm"
 
+        if envs.VLLM_USE_V1 and current_platform.is_xpu():
+            import os
+            lowbit = os.getenv("IPEX_LLM_LOWBIT", None)
+            if lowbit is not None:
+                from ipex_llm.vllm.xpu.model_convert import _ipex_llm_convert
+                _ipex_llm_convert(lowbit)
         # If the env var is set, it uses the Ray's compiled DAG API
         # which optimizes the control plane overhead.
         # Run vLLM with VLLM_USE_RAY_COMPILED_DAG=1 to enable it.

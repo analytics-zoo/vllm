@@ -337,6 +337,12 @@ class EngineCoreProc(EngineCore):
 
         self.step_fn = (self.step if self.batch_queue is None else
                         self.step_with_batch_queue)
+        
+        import os
+        lowbit = os.getenv("IPEX_LLM_LOWBIT", None)
+        if lowbit is not None:
+            from ipex_llm.vllm.xpu.model_convert import _ipex_llm_convert
+            _ipex_llm_convert(lowbit)
 
     @staticmethod
     def run_engine_core(*args,
