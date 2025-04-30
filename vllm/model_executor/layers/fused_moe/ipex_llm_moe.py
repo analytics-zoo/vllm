@@ -244,7 +244,7 @@ class IPEXLLMFusedMoEMethod(FusedMoEMethodBase):
         topk_weights = topk_weights.to(dtype)
         if expert_map is not None:
             expert_map = expert_map.to(device=device)
-            topk_indices = expert_map[topk_indices]
+            topk_indices = expert_map[topk_indices].long()
 
         topk_indices = topk_indices.flatten()
         token_indices = torch.arange(num_tokens, device=device).repeat_interleave(topk)
