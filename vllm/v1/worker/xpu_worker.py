@@ -31,9 +31,16 @@ class XPUWorker(Worker):
         assert device_config.device_type == "xpu"
         assert current_platform.is_xpu()
 
-    def load_model(self) -> None:
-        self.model_runner.load_model()
+        import os
+        lowbit = os.getenv("IPEX_LLM_LOWBIT", None)
+        if lowbit is not None:
+            from ipex_llm.vllm.xpu.model_convert import _ipex_llm_convert
+            _ipex_llm_convert(lowbit)
 
+
+    def compile_or_warm_up_model(self) -> None:
+        pass
+        
     # we provide this function due to `torch.xpu.mem_get_info()` doesn't
     # return correct free_gpu_memory on intel client GPU. We need to
     # calculate/estiamte it.

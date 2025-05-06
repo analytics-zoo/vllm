@@ -26,6 +26,9 @@ class XPUPlatform(Platform):
     # see https://github.com/ray-project/ray/blob/6a5eb5865eeb9ccf058a79b44f107e327e360673/python/ray/_private/accelerators/intel_gpu.py#L20 # noqa: E501
     ray_device_key: str = "GPU"
     device_control_env_var: str = "ONEAPI_DEVICE_SELECTOR"
+    additional_env_vars: list[str] = [
+        "IPEX_LLM_LOWBIT",
+    ]
 
     @classmethod
     def get_attn_backend_cls(cls, selected_backend: _Backend, head_size: int,
@@ -163,3 +166,7 @@ class XPUPlatform(Platform):
     @classmethod
     def get_device_communicator_cls(cls) -> str:
         return "vllm.distributed.device_communicators.xpu_communicator.XpuCommunicator"  # noqa
+
+    @classmethod
+    def use_all_gather(cls) -> bool:
+        return False
