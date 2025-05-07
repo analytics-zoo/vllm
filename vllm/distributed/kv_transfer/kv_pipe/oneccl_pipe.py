@@ -55,10 +55,15 @@ class OnecclPipe(KVPipeBase):
         self.local_rank = local_rank
         self.kv_rank = self.config.kv_rank
         self.kv_parallel_size = self.config.kv_parallel_size
+        self.device_group = None
         if device is None:
             self.device = self._select_device(self.config.kv_buffer_device)
         else:
             self.device = self._select_device(device)
+        # if self.device.type == "cpu":
+        #     backend = "gloo"
+        # else:
+        #     backend = "ccl"
 
         # build distributed connection and send/recv implementation
         # TODO: set this timeout later...
@@ -70,16 +75,19 @@ class OnecclPipe(KVPipeBase):
             world_size=self.kv_parallel_size,
             store_timeout=store_timeout,
         )
-        self.device_group = stateless_init_torch_distributed_process_group(
-            host = self.config.kv_ip,
-            port = self.config.kv_port + port_offset + 1000,
-            rank = self.kv_rank,
-            world_size = self.kv_parallel_size,
-            backend="ccl",
-        )
+        self.port_offset = port_offset
+        # TODO: or we can uses the backend store for sending/recving messages.
+        # self.device_group = stateless_init_torch_distributed_process_group(
+        #     host = self.config.kv_ip,
+        #     port = self.config.kv_port + port_offset + 1000,
+        #     rank = self.kv_rank,
+        #     world_size = self.kv_parallel_size,
+        #     backend="ccl",
+        # )
         self.group.barrier()
+        impl = self._get_device_send_recv_impl(self.group)
         # TODO: can we uses the same store for processgroup?
-        self.device_send_func, self.device_recv_func = self.device_group.send, self.device_group.recv
+        self.device_send_func, self.device_recv_func = impl
         # set target rank
         self.target_rank_for_send = (self.kv_rank + 1) % self.kv_parallel_size
         self.target_rank_for_recv = (self.kv_rank - 1) % self.kv_parallel_size
@@ -90,34 +98,42 @@ class OnecclPipe(KVPipeBase):
         self.buffer_size_lock = threading.Lock()
         self.buffer_size_thresh = self.config.kv_buffer_size
 
-    # def _get_device_send_recv_impl(
-    #     self, group: StatelessProcessGroup
-    # ) -> Tuple[Callable[[torch.Tensor, int], None], Callable[
-    #     [torch.Tensor, int], None]]:
+    def _get_device_send_recv_impl(
+        self, group: StatelessProcessGroup
+    ) -> Tuple[Callable[[torch.Tensor, int], None], Callable[
+        [torch.Tensor, int], None]]:
 
-    #     send: Callable[[torch.Tensor, int], None]
-    #     recv: Callable[[torch.Tensor, int], None]
-    #     if self.device.type == "xpu":
-    #         # use PyNCCL for send / recv
-    #         # This receives the group...
-    #         comm = OneCCLCommunicator(group, device=self.local_rank)
-    #         comm.disabled = False
-    #         # TODO: we may need to optimize this...
-    #         # As it may need customized version...
-    #         send, recv = comm.send, comm.recv  # type: ignore
-    #     else:
-    #         # This send / recv implementation here is NOT intended to transfer
-    #         # KV caches (and should NOT be repurposed to transfer KV caches).
-    #         # Currently it is only used to transmit control-plane messages
-    #         # for PyNcclBuffer.
-    #         send = group.send_obj
+        send: Callable[[torch.Tensor, int], None]
+        recv: Callable[[torch.Tensor, int], None]
+        if self.device.type == "xpu":
+            # use PyNCCL for send / recv
+            # This receives the group...
+            self.device_group = stateless_init_torch_distributed_process_group(
+                host = self.config.kv_ip,
+                port = self.config.kv_port + self.port_offset + 1000,
+                rank = self.kv_rank,
+                world_size = self.kv_parallel_size,
+                backend="ccl",
+            )
+            # TODO: we may need to optimize this...
+            # As it may need customized version...
+            send, recv = self.device_group.send, self.device_group.recv  # type: ignore
+        else:
+            # This send / recv implementation here is NOT intended to transfer
+            # KV caches (and should NOT be repurposed to transfer KV caches).
+            # Currently it is only used to transmit control-plane messages
+            # for PyNcclBuffer.
+            def my_send(x, dst, tag):
+                return group.send_obj(x, dst)
+            # send = group.send_obj
+            send = my_send
 
-    #         def my_recv(x, src):
-    #             x[...] = group.recv_obj(src)
+            def my_recv(x, src, tag):
+                x[...] = group.recv_obj(src)
 
-    #         recv = my_recv
+            recv = my_recv
 
-    #     return send, recv
+        return send, recv
 
     def _select_device(self, device: str):
         logger.info("Selecting device: %s", device)
@@ -180,35 +196,43 @@ class OnecclPipe(KVPipeBase):
 
     def _send_impl(self, tensor: Optional[torch.Tensor]) -> None:
         """
-        The actual implementation of sending the tensor and its metadata to the
-        target rank.
+        Sends the tensor and its metadata to the target rank.
 
         Parameters:
-            - tensor: The input tensor to be sent, or None if no tensor is
-              being sent.
+            tensor: The tensor to be sent, or None.
         """
         metadata = self._make_metadata(tensor)
         self._send_metadata(metadata)
-        # Always use tag 0 as there is only one working thread for sending data...
-        if tensor is not None:
-            self.device_send_func([tensor.to(self.device)],
-                                  self.target_rank_for_send, 0)
+
+        if tensor is None:
+            return
+
+        tensor = tensor.to(self.device)
+        if self.device.type == "xpu":
+            tensor = [tensor]
+
+        self.device_send_func(tensor, self.target_rank_for_send, 0)
 
     def _recv_impl(self) -> Optional[torch.Tensor]:
         """
-        The actual implementation of receiving a tensor and its metadata from
-        the target rank.
+        Receives a tensor and its metadata from the target rank.
 
         Returns:
-            - buffer: The received tensor, or None if no tensor is received.
+            The received tensor, or None if no tensor is received.
         """
         metadata = self._recv_metadata()
         if metadata["dtype"] is None:
             return None
-        buffer = self._prepare_recv_buffer(metadata)
-        # Always use tag 0 as there is only one working thread for sending data...
-        self.device_recv_func([buffer], self.target_rank_for_recv, 0)
 
+        buffer = self._prepare_recv_buffer(metadata)
+        tag = 0  # Only one thread for sending data
+
+        if self.device.type == "xpu":
+            buffer = [buffer]
+            self.device_recv_func(buffer, self.target_rank_for_recv, tag)
+            return buffer[0]
+        
+        self.device_recv_func(buffer, self.target_rank_for_recv, tag)
         return buffer
 
     def send_tensor_wrapper(self, tensor: Optional[torch.Tensor],

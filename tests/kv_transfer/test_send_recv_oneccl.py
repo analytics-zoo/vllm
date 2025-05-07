@@ -17,9 +17,9 @@ def test_run(my_rank, pipe):
     y = torch.tensor([[2., 3., 4., 8.]]).to(pipe.device)
     if my_rank == 0:
         pipe.send_tensor(x)
-        print(f"rank {my_rank} sent tensor x")
+        print(f"rank {my_rank} sent tensor x:{x}")
         pipe.send_tensor(y)
-        print(f"rank {my_rank} sent tensor y")
+        print(f"rank {my_rank} sent tensor y:{y}")
         x2 = pipe.recv_tensor()
         print(f"rank {my_rank} received x2 = ", x2)
         y2 = pipe.recv_tensor()
