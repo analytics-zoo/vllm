@@ -47,9 +47,9 @@ class IPEXAttentionBackend(AttentionBackend):
         # if block_size % 16 != 0:
             # raise ValueError("Block size must be a multiple of 16.")
         # This needs to be changed...
-        # return (2, num_blocks, block_size, num_kv_heads, head_size)
-        return PagedAttention.get_kv_cache_shape(num_blocks, block_size,
-                                                 num_kv_heads, head_size)
+        return (2, num_blocks, block_size, num_kv_heads, head_size)
+        # return PagedAttention.get_kv_cache_shape(num_blocks, block_size,
+        #                                          num_kv_heads, head_size)
 
 
 
