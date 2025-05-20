@@ -128,6 +128,8 @@ STR_NOT_IMPL_ENC_DEC_ERR_STRS = {
     "STR_NOT_IMPL_ENC_DEC_PROMPT_ADAPTER": STR_NOT_IMPL_ENC_DEC_PROMPT_ADAPTER,
 }
 
+BMG_TARGET_IDS = ["0xe20b", "0xe210"]
+
 # Constants related to forcing the attention backend selection
 
 # String name of register which may be set in order to
@@ -2564,3 +2566,14 @@ def sha256(input) -> int:
     input_bytes = pickle.dumps(input, protocol=pickle.HIGHEST_PROTOCOL)
     return int.from_bytes(hashlib.sha256(input_bytes).digest(),
                           byteorder="big")
+
+@cache
+def is_bmg_platform():
+    if not torch.xpu.is_available():
+        raise ValueError("Cannot detect the usage of XPU!")
+    device_index = torch.xpu.current_device()
+    device_name = torch.xpu.get_device_name(device_index)
+    for target_id in BMG_TARGET_IDS:
+        if target_id in device_name:
+            return True
+    return False
