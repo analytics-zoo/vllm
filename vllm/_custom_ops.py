@@ -14,7 +14,8 @@ from vllm.scalar_type import ScalarType
 
 logger = init_logger(__name__)
 
-if not current_platform.is_tpu() and not current_platform.is_hpu():
+if not current_platform.is_tpu() and not current_platform.is_hpu()\
+        and not current_platform.is_xpu():
     try:
         import vllm._C
     except ImportError as e:
@@ -1184,7 +1185,10 @@ def scaled_fp8_quant(
                 output, input, scale, scale_ub)
         else:
             scale = torch.zeros(1, device=input.device, dtype=torch.float32)
-            torch.ops._C.dynamic_scaled_fp8_quant(output, input, scale)
+            if current_platform.is_xpu():
+                torch.ops.torch_ipex.dynamic_scaled_fp8_quant(output, input, scale)
+            else:
+                torch.ops._C.dynamic_scaled_fp8_quant(output, input, scale)
     else:
         # num_token_padding not implemented for this case
         assert (scale.numel() == 1 or num_token_padding is None)

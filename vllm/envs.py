@@ -118,6 +118,11 @@ if TYPE_CHECKING:
     VLLM_NIXL_SIDE_CHANNEL_PORT: int = 5557
     VLLM_ALL2ALL_BACKEND: str = "naive"
     VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE: int = 163840
+    VLLM_XPU_FP8_DTYPE: str = "e5m2"
+    VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT: bool = False
+    CCL_P2P_CPU: bool = False
+    VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT: bool = True
+    VLLM_QUANTIZE_Q40_LIB: str = "/opt/lib/vllm_int4_for_multi_arc.so"
 
 
 def get_default_cache_root():
@@ -142,10 +147,10 @@ def maybe_convert_int(value: Optional[str]) -> Optional[int]:
 
 def get_vllm_port() -> Optional[int]:
     """Get the port from VLLM_PORT environment variable.
-    
+
     Returns:
         The port number as an integer if VLLM_PORT is set, None otherwise.
-        
+
     Raises:
         ValueError: If VLLM_PORT is a URI, suggest k8s service discovery issue.
     """
@@ -300,9 +305,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     lambda: bool(
         os.environ.get("VLLM_TEST_DYNAMO_FULLGRAPH_CAPTURE", "1") != "0"),
 
-    # Internal flag to enable/disable Inductor standalone compile
-    "VLLM_TEST_STANDALONE_COMPILE":
-    lambda: os.environ.get("VLLM_TEST_STANDALONE_COMPILE", "0") != "0",
+    # Feature flag to enable/disable Inductor standalone compile.
+    # In torch <= 2.7 we ignore this flag; in torch >= 2.8 this is
+    # enabled by default.
+    "VLLM_USE_STANDALONE_COMPILE":
+    lambda: os.environ.get("VLLM_USE_STANDALONE_COMPILE", "1") == "1",
 
     # local rank of the process in the distributed setting, used to determine
     # the GPU device id
@@ -822,6 +829,22 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # This is used to prevent the kernel from running out of memory.
     "VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE":
     lambda: int(os.getenv("VLLM_MAX_TOKENS_PER_EXPERT_FP4_MOE", "163840")),
+
+    # fp8 dtype for XPU platform
+    "VLLM_XPU_FP8_DTYPE":
+    lambda: os.environ.get("VLLM_XPU_FP8_DTYPE", "e5m2"),
+
+    # Offload model weights to cpu before online fp8 quantization
+    "VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT":
+    lambda: os.environ.get("VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT", "1") == "1",
+
+    # Path for finding libs for vLLM sym_int4 quantization support
+    "VLLM_QUANTIZE_Q40_LIB":
+    lambda: os.environ.get("VLLM_QUANTIZE_Q40_LIB", "/opt/lib/vllm_int4_for_multi_arc.so"),
+
+    # Do send/recv on CPU backend
+    "CCL_P2P_CPU":
+    lambda: os.environ.get("CCL_P2P_CPU", "1") == "1"
 }
 
 # --8<-- [end:env-vars-definition]
@@ -884,7 +907,7 @@ def compute_hash() -> str:
         "VLLM_USE_TRITON_AWQ",
         "VLLM_DP_RANK",
         "VLLM_DP_SIZE",
-        "VLLM_TEST_STANDALONE_COMPILE",
+        "VLLM_USE_STANDALONE_COMPILE",
     ]
     for key in environment_variables_to_hash:
         if key in environment_variables:

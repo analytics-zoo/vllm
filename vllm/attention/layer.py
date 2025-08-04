@@ -143,7 +143,7 @@ class Attention(nn.Module):
         # opaque custom op. For other platforms, we directly call them
         # and let torch.compile handle them.
         self.use_direct_call = not current_platform.is_cuda_alike(
-        ) and not current_platform.is_cpu()
+        ) and not current_platform.is_cpu() and not current_platform.is_xpu()
 
         self.use_output = attn_backend.accept_output_buffer
         compilation_config = get_current_vllm_config().compilation_config
@@ -367,6 +367,87 @@ def maybe_save_kv_layer_to_connector(
     assert isinstance(attn_metadata, dict)
     connector.save_kv_layer(layer_name, kv_cache_layer,
                             attn_metadata[layer_name])
+
+
+class SelfMultiHeadAttention(nn.Module):
+    """Multi-headed attention without any cache, used for ViT."""
+
+    def __init__(
+        self,
+        num_heads: int,
+        head_size: int,
+        scale: float,
+        num_kv_heads: Optional[int] = None,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_size = head_size
+        self.scale = scale
+        self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
+
+        assert self.num_heads % self.num_kv_heads == 0
+        self.num_queries_per_kv = self.num_heads // self.num_kv_heads
+
+        self.attn_backend =  _Backend.TORCH_SDPA
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+    ) -> torch.Tensor:
+        """Input shape: batch_size x seq_len x hidden_size"""
+        # TODO(Isotr0py): Use existing backend implementations and support FA3
+        bsz, q_len, _ = query.size()
+        kv_len = key.size(1)
+
+        q = query.view(bsz, q_len, self.num_heads, self.head_size)
+        k = key.view(bsz, kv_len, self.num_kv_heads, self.head_size)
+        v = value.view(bsz, kv_len, self.num_kv_heads, self.head_size)
+        from einops import rearrange
+        q, k, v = (rearrange(x, "b s ... -> (b s) ...") for x in [q, k, v])
+        from vllm._ipex_ops import ipex_ops
+        output = torch.empty(
+                    (q.shape[0], q.shape[1], q.shape[2]),
+                    dtype=q.dtype,
+                    device=q.device)
+        import math
+        head_dim = q.shape[-1]
+        scale = 1 / math.sqrt(head_dim) if self.scale is None else self.scale
+        tmp = [0]
+        tmp.append(q_len)
+        seqlen = torch.tensor(tmp)
+        cu_seqlens = torch.cumsum(seqlen, dim=0).to(device=query.device)
+        max_seqlen = q_len
+        ipex_ops.varlen_attention(q, k, v, output,
+                                cu_seqlens,
+                                cu_seqlens,
+                                None,
+                                max_seqlen,
+                                max_seqlen,
+                                pdropout=0,
+                                softmax_scale=scale,
+                                zero_tensors=False,
+                                is_causal=False,
+                                return_softmax=False,
+                                window_size_left=-1,
+                                window_size_right=-1,
+                                gen_=None,
+                                logits_soft_cap=0
+                                )
+
+        # out = rearrange(output,
+        #                             "(b s) ... -> b s ...",
+        #                             b=batch_size)
+        # query, key, value = (x.transpose(1, 2)
+        #                         for x in (query, key, value))
+        # out = F.scaled_dot_product_attention(query,
+        #                                         key,
+        #                                         value,
+        #                                         scale=self.scale)
+        # out = out.transpose(1, 2)
+
+        return output.reshape(bsz, q_len, -1)
 
 
 def unified_attention(

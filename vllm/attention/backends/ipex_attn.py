@@ -19,6 +19,8 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 _PARTITION_SIZE = 512
+_IPEX_SUPPORTED_ATTENTION_TYPE = [AttentionType.DECODER,
+                                  AttentionType.ENCODER_ONLY]
 
 
 class IpexAttnBackend(AttentionBackend):
@@ -143,7 +145,9 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
 
         assert self.num_heads % self.num_kv_heads == 0
         self.num_queries_per_kv = self.num_heads // self.num_kv_heads
-        self.need_mask = (self.sliding_window is not None)
+        self.need_mask = (self.sliding_window is not None or
+                          self.alibi_slopes is not None)
+        self.attn_type = attn_type
         if logits_soft_cap is None:
             logits_soft_cap = -1
         self.logits_soft_cap = logits_soft_cap
@@ -157,11 +161,9 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
             raise NotImplementedError(
                 "IPEX backend does not support FP8 KV cache. "
                 "Please use xFormers backend instead.")
-        if attn_type != AttentionType.DECODER:
-            raise NotImplementedError("Encoder self-attention and "
-                                      "encoder/decoder cross-attention "
-                                      "are not implemented for "
-                                      "IpexAttnBackendImpl")
+        if attn_type not in _IPEX_SUPPORTED_ATTENTION_TYPE:
+            raise NotImplementedError("Current attn type {attn_type} " \
+                                      "is not implemented for IpexAttnBackendImpl")
 
     def split_kv_cache(
         self,
@@ -223,6 +225,10 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                 layer._v_scale_float,
             )
 
+        is_causal = not self.need_mask
+        if self.attn_type == AttentionType.ENCODER_ONLY:
+            is_causal = False
+
         if attn_metadata.is_prompt:
             assert attn_metadata.seq_lens is not None
             if (kv_cache.numel() == 0
@@ -259,7 +265,7 @@ class IpexAttnBackendImpl(AttentionImpl[IpexAttnMetadata]):
                     pdropout=0.0,
                     softmax_scale=self.scale,
                     zero_tensors=False,
-                    is_causal=True,
+                    is_causal=is_causal,
                     return_softmax=False,
                     gen_=None,
                     window_size_left=-1,

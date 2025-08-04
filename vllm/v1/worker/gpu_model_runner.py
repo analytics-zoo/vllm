@@ -31,6 +31,7 @@ from vllm.model_executor.model_loader import TensorizerLoader, get_model
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.inputs import MultiModalKwargs, PlaceholderRange
 from vllm.multimodal.utils import group_mm_inputs_by_modality
+from vllm.platforms import current_platform
 from vllm.sampling_params import SamplingType
 from vllm.sequence import IntermediateTensors
 from vllm.utils import (STR_DTYPE_TO_TORCH_DTYPE, DeviceMemoryProfiler,
@@ -67,6 +68,9 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
 else:
     xgr = LazyLoader("xgr", globals(), "xgrammar")
+
+if current_platform.is_xpu():
+    import intel_extension_for_pytorch
 
 logger = init_logger(__name__)
 
@@ -1431,6 +1435,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Clear KVConnector state after all KVs are generated.
         if has_kv_transfer_group():
             get_kv_transfer_group().clear_connector_metadata()
+
+        if current_platform.is_xpu():
+            reserved_mem = torch.xpu.memory_reserved()
+            if reserved_mem >= self.vllm_config.cache_config.threshold_mem:
+                torch.xpu.empty_cache()
 
         return ModelRunnerOutput(
             req_ids=self.input_batch.req_ids,

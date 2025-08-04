@@ -6,17 +6,36 @@ Punica: Multi-Tenant LoRA Serving.
 https://arxiv.org/abs/2310.18547
 """
 
-from typing import TYPE_CHECKING, Optional, Union, final
+from typing import TYPE_CHECKING, Optional, Union, Tuple, final
 
 import torch
 
 import vllm.envs as envs
 from vllm.lora.layers import LoRAMapping
+from vllm.platforms import current_platform
 from vllm.triton_utils import HAS_TRITON
 
-if HAS_TRITON:
+is_xpu = current_platform.is_xpu()
+#is_xpu = False
+if HAS_TRITON and not is_xpu:
     from vllm.lora.ops.triton_ops import (LoRAKernelMeta, lora_expand,
                                           lora_shrink)
+elif is_xpu:
+    from vllm._ipex_ops import ipex_ops
+    try:
+        lora_expand = ipex_ops.lora_expand
+        lora_shrink = ipex_ops.lora_shrink
+        XPU_KERNEL_V = 1
+    except AttributeError:
+        from vllm._ipex_ops import ipex_ops
+        bgmv_expand = ipex_ops.bgmv_expand
+        bgmv_expand_slice = ipex_ops.bgmv_expand_slice
+        bgmv_shrink = ipex_ops.bgmv_shrink
+        sgmv_expand = ipex_ops.sgmv_expand
+        sgmv_expand_slice = ipex_ops.sgmv_expand_slice
+        sgmv_shrink = ipex_ops.sgmv_shrink
+        XPU_KERNEL_V = 0
+
 
 from .punica_base import PunicaWrapperBase
 
@@ -40,9 +59,10 @@ class PunicaWrapperGPU(PunicaWrapperBase):
 
         self.max_loras = kwargs['max_loras']
 
-        self.token_mapping_meta = LoRAKernelMeta.make(self.max_loras,
-                                                      max_num_batched_tokens,
-                                                      device=device)
+        if not (is_xpu and XPU_KERNEL_V == 0):
+            self.token_mapping_meta = LoRAKernelMeta.make(self.max_loras,
+                                                          max_num_batched_tokens,
+                                                          device=device)
 
         # When cudagraph capture size is greater than max_num_seqs (max_batches,
         # here), V0 captures the graph as if max_num_seqs is set to
@@ -50,9 +70,10 @@ class PunicaWrapperGPU(PunicaWrapperBase):
         # V1 doesn't have this problem and always respects max_num_seqs.
         max_num_prompts = (max_batches
                            if envs.VLLM_USE_V1 else max_num_batched_tokens)
-        self.prompt_mapping_meta = LoRAKernelMeta.make(self.max_loras,
-                                                       max_num_prompts,
-                                                       device=device)
+        if not (is_xpu and XPU_KERNEL_V == 0):
+            self.prompt_mapping_meta = LoRAKernelMeta.make(self.max_loras,
+                                                           max_num_prompts,
+                                                           device=device)
 
     def update_metadata(
             self,
@@ -65,13 +86,79 @@ class PunicaWrapperGPU(PunicaWrapperBase):
             **kwargs):
 
         self.is_prefill = mapping.is_prefill
-        self._update_base_metadata(mapping, lora_index_to_id, max_loras,
-                                   vocab_size, extra_vocab_size,
-                                   long_lora_context)
+        if is_xpu and XPU_KERNEL_V == 0:
+            PunicaWrapperBase.update_metadata(self, mapping, lora_index_to_id,
+                                              max_loras, vocab_size,
+                                              extra_vocab_size,
+                                              long_lora_context, **kwargs)
+        else:
+            self._update_base_metadata(mapping, lora_index_to_id, max_loras,
+                                       vocab_size, extra_vocab_size,
+                                       long_lora_context)
+            # Prepare cuda kernel metadata tensors
+            self.token_mapping_meta.prepare_tensors(self.token_lora_indices)
+            self.prompt_mapping_meta.prepare_tensors(self.sampler_indices)
 
-        # Prepare cuda kernel metadata tensors
-        self.token_mapping_meta.prepare_tensors(self.token_lora_indices)
-        self.prompt_mapping_meta.prepare_tensors(self.sampler_indices)
+    def _apply_shrink_prefill(
+        self,
+        y: torch.Tensor,
+        x: torch.Tensor,
+        w_t_all: Tuple[torch.Tensor, ...],
+        scale: float,
+    ):
+        #No LoRA request, so return directly
+        if self.no_lora:
+            return
+        sgmv_shrink(
+            x,
+            w_t_all,
+            y,
+            *self.prefill_metadata,
+            scale,
+        )
+
+    def _apply_shrink_decode(
+        self,
+        y: torch.Tensor,
+        x: torch.Tensor,
+        w_t_all: torch.Tensor,
+        scale: float,
+    ):
+        bgmv_shrink(x, w_t_all, y, self.token_lora_indices, scale)
+
+    def _apply_expand_prefill(
+        self,
+        y: torch.Tensor,
+        x: torch.Tensor,
+        w_t_all: Tuple[torch.Tensor, ...],
+        offset_start: int,
+        add_inputs: bool,
+    ):
+        #No LoRA request, so return directly
+        if self.no_lora:
+            return
+
+        sgmv_expand(
+            x,
+            w_t_all,
+            y,
+            *self.prefill_metadata,
+            offset_start=offset_start,
+            add_inputs=add_inputs,
+        )
+
+    def _apply_expand_decode(
+        self,
+        y: torch.Tensor,
+        x: torch.Tensor,
+        w_t_all: torch.Tensor,
+        y_offset: Optional[int],
+        y_slice_size: Optional[int],
+        add_inputs: bool,
+    ):
+        bgmv_expand_slice(x, w_t_all, y, self.token_lora_indices, y_offset,
+                          y_slice_size, add_inputs)
+
 
     def add_shrink(self, y: torch.Tensor, x: torch.Tensor,
                    lora_a_stacked: tuple[torch.Tensor,
@@ -91,13 +178,20 @@ class PunicaWrapperGPU(PunicaWrapperBase):
         """
 
         x = x.view(-1, x.shape[-1])
-        lora_shrink(
-            x,
-            lora_a_stacked,
-            y,
-            *self.token_mapping_meta.meta_args(x.size(0)),
-            scale,
-        )
+        if is_xpu and XPU_KERNEL_V == 0:
+            for slice_idx in range(len(lora_a_stacked)):
+                self._apply_shrink_decode(y[slice_idx], x,
+                                          lora_a_stacked[slice_idx], scale)
+        else:
+            meta_args = self.token_mapping_meta.meta_args(x.size(0))
+
+            lora_shrink(
+                x,
+                lora_a_stacked,
+                y,
+                *self.token_mapping_meta.meta_args(x.size(0)),
+                scale,
+            )
 
     def add_expand(self,
                    y: torch.Tensor,
@@ -137,17 +231,29 @@ class PunicaWrapperGPU(PunicaWrapperBase):
 
         assert x.ndim == 3
         assert x.size(0) == len(output_slices)
-        num_tokens = x.size(1)  # first dimension is the num slices
 
-        lora_expand(
-            x,
-            lora_b_stacked,
-            y,
-            *self.token_mapping_meta.meta_args(num_tokens),
-            offset_start=offset_start,
-            add_inputs=True,
-        )
-
+        if is_xpu and XPU_KERNEL_V == 0:
+            # TODO fuse these kernels
+            for slice_idx in range(len(lora_b_stacked)):
+                self._apply_expand_decode(
+                    y,
+                    x[slice_idx],
+                    lora_b_stacked[slice_idx],
+                    offset_start,
+                    output_slices[slice_idx],
+                    add_inputs=add_inputs,
+                )
+                offset_start += output_slices[slice_idx]
+        else:
+            num_tokens = x.size(1)  # first dimension is the num slices
+            lora_expand(
+                x,
+                lora_b_stacked,
+                y,
+                *self.token_mapping_meta.meta_args(num_tokens),
+                offset_start=offset_start,
+                add_inputs=True,
+            )
         y = y.view_as(y_org)
 
     def add_lora_embedding(self,
@@ -169,14 +275,18 @@ class PunicaWrapperGPU(PunicaWrapperBase):
             add_inputs (bool): Default to True.
         """
 
-        lora_expand(
-            x.unsqueeze(dim=0),
-            (lora_b_stacked, ),
-            y,
-            *self.token_mapping_meta.meta_args(x.size(0)),
-            offset_start=0,
-            add_inputs=add_inputs,
-        )
+        if is_xpu and XPU_KERNEL_V == 0:
+            bgmv_expand(x, lora_b_stacked, y, self.token_lora_indices,
+                            add_inputs)
+        else:
+            lora_expand(
+                x.unsqueeze(dim=0),
+                (lora_b_stacked, ),
+                y,
+                *self.token_mapping_meta.meta_args(x.size(0)),
+                offset_start=0,
+                add_inputs=add_inputs,
+            )
 
     def add_lora_linear(self,
                         y: torch.Tensor,
@@ -279,11 +389,19 @@ class PunicaWrapperGPU(PunicaWrapperBase):
                                  dtype=torch.float32,
                                  device=x.device)
 
-        lora_shrink(x, [lora_a_stacked], buffer.unsqueeze(dim=0),
-                    *self.prompt_mapping_meta.meta_args(x.size(0)), scale)
+        if is_xpu and XPU_KERNEL_V == 0:
+            bgmv_shrink(x, lora_a_stacked, buffer, self.sampler_indices, scale)
+            bgmv_expand(buffer,
+                        lora_b_stacked,
+                        y,
+                        self.sampler_indices,
+                        add_inputs=True)
+        else:
+            lora_shrink(x, [lora_a_stacked], buffer.unsqueeze(dim=0),
+                        *self.prompt_mapping_meta.meta_args(x.size(0)), scale)
 
-        lora_expand(buffer.unsqueeze(dim=0), [lora_b_stacked],
-                    y,
-                    *self.prompt_mapping_meta.meta_args(buffer.size(0)),
-                    add_inputs=True)
+            lora_expand(buffer.unsqueeze(dim=0), [lora_b_stacked],
+                        y,
+                        *self.prompt_mapping_meta.meta_args(buffer.size(0)),
+                        add_inputs=True)
         y = y.view_as(y_org)

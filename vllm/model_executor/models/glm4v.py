@@ -17,6 +17,7 @@ from transformers.image_utils import ImageInput
 from transformers.tokenization_utils_base import TextInput
 
 from vllm.attention.layer import MultiHeadAttention
+from vllm.attention.layer import SelfMultiHeadAttention
 from vllm.config import VllmConfig
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import SiluAndMul, get_act_fn
@@ -111,7 +112,9 @@ class EVA2CLIPAttention(nn.Module):
             prefix=f"{prefix}.dense",
         )
 
-        self.attn = MultiHeadAttention(self.num_heads_per_rank, self.head_dim,
+        # self.attn = MultiHeadAttention(self.num_heads_per_rank, self.head_dim,
+        #                                self.scale)
+        self.attn = SelfMultiHeadAttention(self.num_heads_per_rank, self.head_dim,
                                        self.scale)
         self.output_dropout = torch.nn.Dropout(config.dropout_prob)
 

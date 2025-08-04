@@ -830,7 +830,7 @@ class ModelConfig:
         optimized_quantization_methods = [
             "fp8", "marlin", "modelopt", "gptq_marlin_24", "gptq_marlin",
             "awq_marlin", "fbgemm_fp8", "compressed-tensors", "experts_int8",
-            "quark", "modelopt_fp4", "bitblas", "gptq_bitblas"
+            "quark", "modelopt_fp4", "bitblas", "gptq_bitblas", "ipex"
         ]
         if self.quantization is not None:
             self.quantization = cast(QuantizationMethods,
@@ -1454,6 +1454,9 @@ class CacheConfig:
     """The number of blocks to allocate for GPU memory."""
     num_cpu_blocks: Optional[int] = field(default=None, init=False)
     """The number of blocks to allocate for CPU memory."""
+    threshold_mem: Optional[int] = field(default=None, init=False)
+    """The mem threshold to do empty cache."""
+
 
     def compute_hash(self) -> str:
         """
@@ -1490,6 +1493,10 @@ class CacheConfig:
         if self.cpu_offload_gb < 0:
             raise ValueError("CPU offload space must be non-negative"
                              f", but got {self.cpu_offload_gb}")
+
+        if self.cpu_offload_gb > 0 and envs.VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT:
+            raise ValueError("CPU offload can't work together with"
+                             "OFFLOAD_WEIGHTS_BEFORE_QUANT")
 
         if self.gpu_memory_utilization > 1.0:
             raise ValueError(

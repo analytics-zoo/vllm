@@ -11,6 +11,7 @@ from torch import nn
 from transformers import SiglipVisionConfig
 
 from vllm.attention.layer import MultiHeadAttention
+from vllm.attention.layer import SelfMultiHeadAttention
 from vllm.distributed import divide, get_tensor_model_parallel_world_size
 from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.linear import (ColumnParallelLinear,
@@ -177,7 +178,9 @@ class SiglipAttention(nn.Module):
         self.tp_size = get_tensor_model_parallel_world_size()
         self.num_heads_per_partition = divide(self.num_heads, self.tp_size)
 
-        self.attn = MultiHeadAttention(self.num_heads_per_partition,
+        # self.attn = MultiHeadAttention(self.num_heads_per_partition,
+        #                                self.head_dim, self.scale)
+        self.attn = SelfMultiHeadAttention(self.num_heads_per_partition,
                                        self.head_dim, self.scale)
 
     def forward(

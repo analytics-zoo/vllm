@@ -30,7 +30,7 @@ from vllm.utils import direct_register_custom_op
 
 has_pplx = importlib.util.find_spec("pplx_kernels") is not None
 
-if current_platform.is_cuda_alike():
+if current_platform.is_cuda_alike() or current_platform.is_xpu():
     from .fused_batched_moe import (BatchedPrepareAndFinalize,
                                     BatchedTritonExperts)
     from .fused_moe import TritonExperts, fused_experts
@@ -425,7 +425,14 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
             layer.w13_weight.data = shuffled_w13
             layer.w2_weight.data = shuffled_w2
 
-        if current_platform.is_cpu():
+        if current_platform.is_xpu():
+            import intel_extension_for_pytorch as ipex
+            layer.ipex_fusion = ipex.llm.modules.GatedMLPMOE(
+                layer.w13_weight,
+                layer.w2_weight,
+                use_prepack=True,
+            )
+        elif current_platform.is_cpu():
             if current_platform.get_cpu_architecture() == CpuArchEnum.X86:
                 import intel_extension_for_pytorch as ipex
                 layer.ipex_fusion = ipex.llm.modules.GatedMLPMOE(
@@ -592,6 +599,30 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                 "Expert score correction bias is not supported for HPU.")
         return layer.hpu_fused_moe(x, layer.w13_weight, layer.w2_weight,
                                    router_logits, top_k)
+
+    def forward_xpu(
+            self,
+            layer: torch.nn.Module,
+            x: torch.Tensor,
+            use_grouped_topk: bool,
+            top_k: int,
+            router_logits: torch.Tensor,
+            renormalize: bool,
+            topk_group: Optional[int] = None,
+            num_expert_group: Optional[int] = None,
+            custom_routing_function: Optional[Callable] = None,
+            **kwargs,
+    ):
+        return layer.ipex_fusion(
+            x,
+            use_grouped_topk,
+            top_k,
+            router_logits,
+            renormalize,
+            topk_group,
+            num_expert_group,
+            custom_routing_function=custom_routing_function
+        )
 
     def forward_tpu(
         self,

@@ -174,9 +174,9 @@ STR_DTYPE_TO_TORCH_DTYPE = {
     "half": torch.half,
     "bfloat16": torch.bfloat16,
     "float": torch.float,
-    "fp8": torch.uint8,
-    "fp8_e4m3": torch.uint8,
-    "fp8_e5m2": torch.uint8,
+    "fp8": torch.float8_e4m3fn,
+    "fp8_e4m3": torch.float8_e4m3fn,
+    "fp8_e5m2": torch.float8_e5m2,
     "int8": torch.int8,
 }
 
@@ -1765,6 +1765,12 @@ def supports_dynamo() -> bool:
     return base_torch_version >= Version("2.4.0")
 
 
+# Supports xccl with PyTorch versions >= 2.8.0 for XPU platform
+def supports_xccl() -> bool:
+    base_torch_version = Version(Version(torch.__version__).base_version)
+    return base_torch_version >= Version("2.8.0") and hasattr(torch, 'xpu') and torch.distributed.is_xccl_available()
+
+
 # Some backends use pytorch version < 2.4.0 which doesn't
 # support `torch.library.custom_op`.
 def supports_custom_op() -> bool:
@@ -2665,7 +2671,8 @@ def warn_for_unimplemented_methods(cls: type[T]) -> type[T]:
             src = inspect.getsource(attr_func)
             if "NotImplementedError" in src:
                 unimplemented_methods.append(attr_name)
-        if unimplemented_methods:
+        from vllm.platforms import current_platform
+        if unimplemented_methods and not current_platform.is_xpu():
             method_names = ','.join(unimplemented_methods)
             msg = (f"Methods {method_names} not implemented in {self}")
             logger.warning(msg)

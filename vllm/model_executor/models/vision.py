@@ -96,6 +96,8 @@ def get_vit_attn_backend(support_fa: bool = False) -> _Backend:
             else:
                 # For Volta and Turing GPUs, use xformers instead.
                 selected_backend = _Backend.XFORMERS
+        elif current_platform.is_xpu:
+            selected_backend = _Backend.IPEX_V1
         else:
             # Default to torch SDPA for other non-GPU platforms.
             selected_backend = _Backend.TORCH_SDPA

@@ -2,10 +2,8 @@
 """A XPU worker class."""
 import gc
 import os
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Type
 
-import intel_extension_for_pytorch  # noqa: F401
-import oneccl_bindings_for_pytorch  # noqa: F401
 import torch
 import torch.distributed
 
@@ -16,15 +14,17 @@ from vllm.distributed.parallel_state import get_pp_group
 from vllm.logger import init_logger
 from vllm.model_executor import set_random_seed
 from vllm.platforms import current_platform
+from vllm.utils import supports_xccl
 from vllm.worker.cache_engine import CacheEngine
 from vllm.worker.worker import Worker
-from vllm.worker.worker_base import LoRANotSupportedWorkerBase, WorkerBase
-from vllm.worker.xpu_model_runner import XPUModelRunner
+from vllm.worker.worker_base import WorkerBase
+from vllm.worker.xpu_model_runner import XPUModelRunner, XPUModelRunnerBase
+from vllm.worker.xpu_pooling_model_runner import XPUPoolingModelRunner
 
 logger = init_logger(__name__)
 
 
-class XPUWorker(LoRANotSupportedWorkerBase, Worker):
+class XPUWorker(Worker):
     """A worker class that executes (a partition of) the model on a GPU.
 
     Each worker is associated with a single XPU device. The worker is 
@@ -57,7 +57,14 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
             assert rank % parallel_config.tensor_parallel_size == 0, \
                    "Driver worker should be rank 0 of tensor parallel group."
 
-        self.model_runner = XPUModelRunner(  # type: ignore
+        ModelRunnerClass: Type[XPUModelRunnerBase] = XPUModelRunner
+
+        model_config = self.model_config
+        print(model_config.task)
+        if model_config.task == "embed":
+            ModelRunnerClass = XPUPoolingModelRunner
+
+        self.model_runner = ModelRunnerClass(  # type: ignore
             vllm_config=vllm_config,
             kv_cache_dtype=self.cache_config.cache_dtype,
             is_driver_worker=is_driver_worker,
@@ -65,7 +72,7 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
         # Uninitialized cache engine. Will be initialized by
         # initialize_cache.
         self.cache_engine: List[CacheEngine]
-        self.gpu_cache: Optional[List[List[torch.Tensor]]]
+        self.gpu_cache: Optional[List[List[torch.Tensor]]] = None
 
     def init_device(self) -> None:
         if self.device_config.device.type == "xpu" and current_platform.is_xpu(
@@ -160,6 +167,8 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
             # use sockets as default Level zero IPC exchange backend. By
             # default oneccl will use `drmfd` as mechanism which need extra
             # dependency (libdrm and drm headers) on your system.
+            default_backend = "xccl" if supports_xccl() else "ccl"
+            XPU_CCL_BACKEND = os.getenv("XPU_CCL_BACKEND", default_backend)
             ENV_CCL_ATL_TRANSPORT = os.getenv("CCL_ATL_TRANSPORT", "ofi")
             ENV_LOCAL_WORLD_SIZE = os.getenv("LOCAL_WORLD_SIZE",
                                              str(parallel_config.world_size))
@@ -171,7 +180,7 @@ class XPUWorker(LoRANotSupportedWorkerBase, Worker):
                 rank=rank,
                 distributed_init_method=distributed_init_method,
                 local_rank=self.local_rank,
-                backend="ccl")
+                backend=XPU_CCL_BACKEND)
 
         ensure_model_parallel_initialized(
             parallel_config.tensor_parallel_size,

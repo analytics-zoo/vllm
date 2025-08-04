@@ -15,6 +15,7 @@ from transformers.dynamic_module_utils import get_class_from_dynamic_module
 from vllm.attention import Attention
 from vllm.config import (ModelConfig, ModelImpl, VllmConfig,
                          set_current_vllm_config)
+from vllm.envs import VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT
 from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import QKVCrossParallelLinear
 from vllm.model_executor.layers.quantization.base_config import (
@@ -24,6 +25,7 @@ from vllm.model_executor.models.adapters import (as_classification_model,
                                                  as_embedding_model,
                                                  as_reward_model)
 from vllm.utils import is_pin_memory_available
+from vllm.model_executor.layers.quantization.sym_int4 import SymInt4LinearMethod
 
 logger = init_logger(__name__)
 
@@ -91,7 +93,8 @@ def initialize_model(
 
 def process_weights_after_loading(model: nn.Module, model_config: ModelConfig,
                                   target_device: torch.device) -> None:
-    for _, module in model.named_modules():
+    modules_to_not_convert=["visual", "vision", "vpm", "resampler"]
+    for name, module in model.named_modules():
         if isinstance(module, QKVCrossParallelLinear):
             # NOTE(Isotr0py): special case for cross QKV layer because
             # q and kv proj aren't registered as submodules intentionally
@@ -99,12 +102,18 @@ def process_weights_after_loading(model: nn.Module, model_config: ModelConfig,
             continue
         quant_method = getattr(module, "quant_method", None)
         if isinstance(quant_method, QuantizeMethodBase):
-            # When quant methods need to process weights after loading
-            # (for repacking, quantizing, etc), they expect parameters
-            # to be on the global target device. This scope is for the
-            # case where cpu offloading is used, where we will move the
-            # parameters onto device for processing and back off after.
-            with device_loading_context(module, target_device):
+            # The quantization of SYM_INT4 happens on CPU instead of XPU.
+            # We uses the parameter quantization_on_cpu=isinstance(quant_method, SymInt4LinearMethod)
+            # to skip moving tensors to XPU
+            with device_loading_context(module, target_device, isinstance(quant_method, SymInt4LinearMethod)):
+                # When quant methods need to process weights after loading
+                # (for repacking, quantizing, etc), they expect parameters
+                # to be on the global target device. This scope is for the
+                # case where cpu offloading is used, where we will move the
+                # parameters onto device for processing and back off after.
+                if any(key in name for key in modules_to_not_convert):
+                    continue
+
                 quant_method.process_weights_after_loading(module)
 
     # Currently only used by MLA.
@@ -120,7 +129,8 @@ def process_weights_after_loading(model: nn.Module, model_config: ModelConfig,
 
 @contextmanager
 def device_loading_context(module: torch.nn.Module,
-                           target_device: torch.device):
+                           target_device: torch.device,
+                           quantization_on_cpu: False):
     if target_device.type == "cpu":
         # If target is CPU, no need to move anything
         yield module
@@ -129,36 +139,41 @@ def device_loading_context(module: torch.nn.Module,
     original_device_states: dict[str, torch.device] = {}
 
     # Store original device states and move parameters to GPU if they're on CPU
-    for name, p in module.named_parameters():
-        if p.device.type == "cpu":
-            original_device_states[name] = p.device
-            p.data = p.data.to(target_device)
-        # Parameters already on target device are not touched
+    if not quantization_on_cpu:
+        for name, p in module.named_parameters():
+            if p.device.type == "cpu":
+                original_device_states[name] = p.device
+                p.data = p.data.to(target_device)
+            # Parameters already on target device are not touched
 
     try:
         yield module
 
     finally:
-        # Restore parameters to their original devices, ignoring new parameters
-        pin_memory = is_pin_memory_available()
-        for name, p in module.named_parameters():
-            if name in original_device_states:
-                original_device: torch.device = original_device_states[name]
-                if original_device.type == "cpu":
-                    # `torch.empty_like` does not support `pin_memory` argument
-                    cpu_data = torch.empty_strided(
-                        size=p.data.size(),
-                        stride=p.data.stride(),
-                        dtype=p.data.dtype,
-                        layout=p.data.layout,
-                        device="cpu",
-                        pin_memory=pin_memory,
-                    )
-                    cpu_data.copy_(p.data)
-                    p.data = cpu_data
-                else:
-                    p.data = p.data.to(original_device)
-        # New parameters or parameters already on target device are untouched
+        # If weights were loaded onto the CPU for FP8 online quantization, there
+        # is no need to move them back to the original device.
+        if not VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT:
+            # Restore parameters to their original devices, ignoring new parameters # noqa: E501
+            pin_memory = is_pin_memory_available()
+            for name, p in module.named_parameters():
+                if name in original_device_states:
+                    original_device: torch.device = original_device_states[
+                        name]
+                    if original_device.type == "cpu":
+                        # `torch.empty_like` does not support `pin_memory` argument # noqa: E501
+                        cpu_data = torch.empty_strided(
+                            size=p.data.size(),
+                            stride=p.data.stride(),
+                            dtype=p.data.dtype,
+                            layout=p.data.layout,
+                            device="cpu",
+                            pin_memory=pin_memory,
+                        )
+                        cpu_data.copy_(p.data)
+                        p.data = cpu_data
+                    else:
+                        p.data = p.data.to(original_device)
+            # New parameters or parameters already on target device are untouched # noqa: E501
 
 
 def resolve_transformers_arch(model_config: ModelConfig,

@@ -271,8 +271,9 @@ class Qwen2VisionAttention(nn.Module):
 
         # Detect attention implementation.
         self.attn_backend: _Backend = get_vit_attn_backend(support_fa=True)
+        self.attn_backend = _Backend.TORCH_SDPA
         if self.attn_backend not in {
-                _Backend.FLASH_ATTN, _Backend.TORCH_SDPA, _Backend.XFORMERS
+                _Backend.FLASH_ATTN, _Backend.TORCH_SDPA, _Backend.XFORMERS, _Backend.IPEX_V1
         }:
             raise RuntimeError(
                 f"Qwen2-VL does not support {self.attn_backend} backend now.")
@@ -342,24 +343,69 @@ class Qwen2VisionAttention(nn.Module):
             context_layer = rearrange(output,
                                       "(b s) ... -> b s ...",
                                       b=batch_size)
+        elif self.attn_backend == _Backend.IPEX_V1:
+            from vllm._ipex_ops import ipex_ops
+
+            q, k, v = (rearrange(x, "b s ... -> (b s) ...") for x in [q, k, v])
+
+            output = torch.empty(
+                q.shape,
+                dtype=q.dtype,
+                device=q.device)
+            ipex_ops.varlen_attention(
+                    q,
+                    k,
+                    v,
+                    output,
+                    cu_seqlens,
+                    cu_seqlens,
+                    None,
+                    max_seqlen,
+                    max_seqlen,
+                    pdropout=0.0,
+                    softmax_scale=1.0/(q.shape[-1] ** 0.5),
+                    zero_tensors=False,
+                    is_causal=True,
+                    return_softmax=False,
+                    gen_=None,
+                    window_size_left=-1,
+                    window_size_right=-1,
+                    logits_soft_cap=-1,
+            )
+            context_layer = rearrange(output,
+                            "(b s) ... -> b s ...",
+                            b=batch_size)
         elif self.attn_backend == _Backend.TORCH_SDPA:
             # Execute attention entry by entry for speed & less VRAM.
-            outputs = []
-            for i in range(1, len(cu_seqlens)):
-                start_idx = cu_seqlens[i - 1]
-                end_idx = cu_seqlens[i]
-                q_i = q[:, start_idx:end_idx]
-                k_i = k[:, start_idx:end_idx]
-                v_i = v[:, start_idx:end_idx]
-                q_i, k_i, v_i = (rearrange(x, "b s h d -> b h s d")
-                                 for x in [q_i, k_i, v_i])
-                output_i = F.scaled_dot_product_attention(q_i,
-                                                          k_i,
-                                                          v_i,
-                                                          dropout_p=0.0)
-                output_i = rearrange(output_i, "b h s d -> b s h d ")
-                outputs.append(output_i)
-            context_layer = torch.cat(outputs, dim=1)
+            q, k, v = (rearrange(x, "b s ... -> (b s) ...") for x in [q, k, v])
+            from vllm._ipex_ops import ipex_ops
+            output = torch.empty(
+                        (q.shape[0], q.shape[1], q.shape[2]),
+                        dtype=q.dtype,
+                        device=q.device)
+            import math
+            head_dim = q.shape[-1]
+            scale = 1 / math.sqrt(head_dim)
+            ipex_ops.varlen_attention(q, k, v, output,
+                                    cu_seqlens,
+                                    cu_seqlens,
+                                    None,
+                                    max_seqlen,
+                                    max_seqlen,
+                                    pdropout=0,
+                                    softmax_scale=scale,
+                                    zero_tensors=False,
+                                    is_causal=False,
+                                    return_softmax=False,
+                                    window_size_left=-1,
+                                    window_size_right=-1,
+                                    gen_=None,
+                                    logits_soft_cap=0
+                                    )
+
+            context_layer = rearrange(output,
+                                    "(b s) ... -> b s ...",
+                                    b=batch_size)
         elif self.attn_backend == _Backend.XFORMERS:
             from xformers import ops as xops
             from xformers.ops.fmha.attn_bias import BlockDiagonalMask
@@ -622,6 +668,8 @@ class Qwen2VisionTransformer(nn.Module):
             max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
         elif self.attn_backend == _Backend.XFORMERS:
             seqlens = (cu_seqlens[1:] - cu_seqlens[:-1]).tolist()
+        elif self.attn_backend == _Backend.IPEX_V1:
+            max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
         return max_seqlen, seqlens
 
     def forward(

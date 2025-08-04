@@ -2,7 +2,7 @@
 """KV-Cache Utilities."""
 import os
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, NamedTuple, Optional
 
@@ -464,6 +464,15 @@ def hash_request_tokens(hash_function: Any, block_size: int,
     return ret
 
 
+def max_memory_usage_bytes(vllm_config: VllmConfig,
+                           kv_cache_specs: Iterable[KVCacheSpec]) -> int:
+    """
+    Get the maximum memory usage in bytes for the given KV cache specs.
+    """
+    return sum(
+        spec.max_memory_usage_bytes(vllm_config) for spec in kv_cache_specs)
+
+
 def estimate_max_model_len(vllm_config: VllmConfig,
                            kv_cache_spec: dict[str, KVCacheSpec],
                            available_memory: int) -> int:
@@ -485,11 +494,8 @@ def estimate_max_model_len(vllm_config: VllmConfig,
         # Modify the max_model_len for this calculation
         vllm_config.model_config.max_model_len = model_len
         # Calculate memory needed for the given model length
-        memory_needed = sum(
-            (layer_spec.max_memory_usage_bytes(vllm_config)
-             for layer_spec in kv_cache_spec.values()),
-            start=0,
-        )
+        memory_needed = max_memory_usage_bytes(vllm_config,
+                                               kv_cache_spec.values())
         return memory_needed <= available_memory
 
     # Binary search for the maximum model length
@@ -544,8 +550,9 @@ def check_enough_kv_cache_memory(vllm_config: VllmConfig,
                                                    available_memory)
         estimated_msg = ""
         if estimated_max_len > 0:
-            estimated_msg = " Based on the available memory,"
-            f" the estimated maximum model length is {estimated_max_len}."
+            estimated_msg = (
+                "Based on the available memory, "
+                f"the estimated maximum model length is {estimated_max_len}.")
 
         raise ValueError(
             f"To serve at least one request with the models's max seq len "

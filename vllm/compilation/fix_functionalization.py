@@ -8,6 +8,7 @@ import torch
 from torch._higher_order_ops.auto_functionalize import auto_functionalized
 
 from vllm.logger import init_logger
+from vllm.platforms import current_platform
 
 from .fx_utils import is_func
 from .vllm_inductor_pass import VllmInductorPass
@@ -31,6 +32,8 @@ class FixFunctionalizationPass(VllmInductorPass):
         self.nodes_to_remove: list[torch.fx.Node] = []
         count = 0
         for node in graph.nodes:
+            if current_platform.is_xpu():
+                continue
             if not is_func(node, auto_functionalized):
                 continue  # Avoid deep if-elif nesting
 

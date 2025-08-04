@@ -43,6 +43,7 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 from vllm.utils import (direct_register_custom_op, resolve_obj_by_qualname,
                         supports_custom_op)
+from vllm.envs import CCL_P2P_CPU
 
 
 @dataclass
@@ -667,6 +668,8 @@ class GroupCoordinator:
                     and tensor.numel() % all_gather_size == 0):
                 tensor = tensor.reshape(all_gather_size, -1)[all_gather_rank]
 
+            if envs.CCL_P2P_CPU:
+                tensor = tensor.cpu()
             if tensor.is_cpu:
                 # use metadata_group for CPU tensors
                 torch.distributed.send(tensor,
@@ -707,9 +710,12 @@ class GroupCoordinator:
         tensor_dict: dict[str, Any] = {}
         for key, value in recv_metadata_list:
             if isinstance(value, TensorMetadata):
+                tensor_device = value.device
+                if envs.CCL_P2P_CPU:
+                    tensor_device = 'cpu'
                 tensor = torch.empty(value.size,
                                      dtype=value.dtype,
-                                     device=value.device)
+                                     device=tensor_device)
                 if tensor.numel() == 0:
                     # Skip broadcasting empty tensors.
                     tensor_dict[key] = tensor
@@ -734,6 +740,8 @@ class GroupCoordinator:
                     torch.distributed.recv(tensor,
                                            src=self.ranks[src],
                                            group=group)
+                if envs.CCL_P2P_CPU:
+                    tensor = tensor.to(value.device)
                 if use_all_gather:
                     # do the allgather
                     tensor = all_gather_group.all_gather(  # type: ignore

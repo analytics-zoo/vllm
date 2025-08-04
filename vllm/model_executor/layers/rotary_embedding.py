@@ -1023,6 +1023,8 @@ class MRotaryEmbedding(RotaryEmbedding):
         assert positions.ndim == 1 or positions.ndim == 2
         assert key is not None
 
+        return self.forward_xpu(positions, query, key)
+        '''
         num_tokens = positions.shape[-1]
         cos_sin = self.cos_sin_cache[positions]
         cos, sin = cos_sin.chunk(2, dim=-1)
@@ -1054,6 +1056,7 @@ class MRotaryEmbedding(RotaryEmbedding):
         key_rot = _apply_rotary_emb(key_rot, cos, sin, self.is_neox_style)
         key = torch.cat((key_rot, key_pass), dim=-1).reshape(key_shape)
         return query, key
+        '''
 
     @classmethod
     def get_input_positions(

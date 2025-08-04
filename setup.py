@@ -147,6 +147,7 @@ class cmake_build_ext(build_ext):
         cmake_args = [
             '-DCMAKE_BUILD_TYPE={}'.format(cfg),
             '-DVLLM_TARGET_DEVICE={}'.format(VLLM_TARGET_DEVICE),
+            "-DCMAKE_CXX_STANDARD=17",
         ]
 
         verbose = envs.VERBOSE
@@ -467,7 +468,7 @@ def _is_xpu() -> bool:
 
 
 def _build_custom_ops() -> bool:
-    return _is_cuda() or _is_hip() or _is_cpu()
+    return _is_cuda() or _is_hip() or _is_cpu() or _is_xpu()
 
 
 def get_rocm_version():

@@ -155,7 +155,10 @@ class Gemma3Attention(nn.Module):
             # Local attention. Override the values in config.json.
             self.rope_theta = config.rope_local_base_freq
             self.rope_scaling = {"rope_type": "default"}
-            self.sliding_window = config.interleaved_sliding_window
+            if hasattr(config, "sliding_window"):
+                self.sliding_window = config.sliding_window
+            else:
+                self.sliding_window = config.interleaved_sliding_window
         else:
             # Global attention. Use the values in config.json.
             self.rope_theta = config.rope_theta

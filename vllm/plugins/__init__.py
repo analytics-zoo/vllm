@@ -64,10 +64,7 @@ def load_general_plugins():
     # some platform-specific configurations
     from vllm.platforms import current_platform
 
-    if current_platform.is_xpu():
-        # see https://github.com/pytorch/pytorch/blob/43c5f59/torch/_dynamo/config.py#L158
-        torch._dynamo.config.disable = True
-    elif current_platform.is_hpu():
+    if current_platform.is_hpu():
         # NOTE(kzawora): PT HPU lazy backend (PT_HPU_LAZY_MODE = 1)
         # does not support torch.compile
         # Eager backend (PT_HPU_LAZY_MODE = 0) must be selected for
