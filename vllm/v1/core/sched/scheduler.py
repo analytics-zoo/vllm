@@ -423,8 +423,7 @@ class Scheduler(SchedulerInterface):
                 # KVConnector: update internal state after allocation.
                 # This information is used to determine if a load is
                 # needed for this request.
-                if num_external_computed_tokens:
-                    assert self.connector is not None
+                if self.connector is not None:
                     self.connector.update_state_after_alloc(
                         request,
                         new_computed_blocks + new_blocks,

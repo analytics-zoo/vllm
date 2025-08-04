@@ -123,7 +123,7 @@ if TYPE_CHECKING:
     CCL_P2P_CPU: bool = False
     VLLM_OFFLOAD_WEIGHTS_BEFORE_QUANT: bool = True
     VLLM_QUANTIZE_Q40_LIB: str = "/opt/lib/vllm_int4_for_multi_arc.so"
-
+    VLLM_MULTIPROC_EXECUTE_MODEL_TIMEOUT_S: int = 300
 
 def get_default_cache_root():
     return os.getenv(
@@ -841,6 +841,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Path for finding libs for vLLM sym_int4 quantization support
     "VLLM_QUANTIZE_Q40_LIB":
     lambda: os.environ.get("VLLM_QUANTIZE_Q40_LIB", "/opt/lib/vllm_int4_for_multi_arc.so"),
+
+    # Timeout for calling execute_model() in multiproc_executor
+    "VLLM_MULTIPROC_EXECUTE_MODEL_TIMEOUT_S":
+    lambda: int(os.getenv("VLLM_MULTIPROC_EXECUTE_MODEL_TIMEOUT_S", "300")),
 
     # Do send/recv on CPU backend
     "CCL_P2P_CPU":

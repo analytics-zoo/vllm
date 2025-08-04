@@ -17,6 +17,7 @@ from multiprocessing.process import BaseProcess
 from threading import Thread
 from typing import Any, Callable, Optional, Union, cast
 
+from vllm import envs
 import cloudpickle
 
 from vllm.config import VllmConfig
@@ -38,7 +39,7 @@ logger = init_logger(__name__)
 POLLING_TIMEOUT_MS = 5000
 POLLING_TIMEOUT_S = POLLING_TIMEOUT_MS // 1000
 
-EXECUTE_MODEL_TIMEOUT_S = 300
+EXECUTE_MODEL_TIMEOUT_S = envs.VLLM_MULTIPROC_EXECUTE_MODEL_TIMEOUT_S
 
 
 class MultiprocExecutor(Executor):
